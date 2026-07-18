@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.routes import chat, feedback, export, health
+from app.services.genie_backend_factory import reset_genie_pipeline
 from app.utils.logging import setup_logging
 
 # Initialize structured logging
@@ -31,11 +32,20 @@ async def lifespan(app: FastAPI):
     # TODO: Initialize SQL connection pool
     # TODO: Initialize LLM service
     # TODO: Initialize conversation manager
-    yield
-    # Shutdown
-    logger.info("Shutting down %s", settings.APP_NAME)
-    # TODO: Close SQL connections
-    # TODO: Flush pending audit logs
+    try:
+        yield
+    finally:
+        # Shutdown
+        logger.info("Shutting down %s", settings.APP_NAME)
+        # TODO: Close SQL connections
+        # TODO: Flush pending audit logs
+        try:
+            reset_genie_pipeline()
+        except Exception:
+            logger.error(
+                "Genie pipeline cleanup failed during shutdown",
+                exc_info=True,
+            )
 
 
 # Create FastAPI application
