@@ -879,12 +879,15 @@ def test_61_no_network_access_during_construction() -> None:
 # ===========================================================================
 
 def test_62_current_runtime_modules_do_not_import_the_new_factory() -> None:
-    """No existing application module imports durable_genie_session_runtime_factory."""
+    """Only the approved backend factory module may import the runtime factory."""
     app_root = pathlib.Path("app")
     offenders: List[str] = []
+    allowed = {
+        "app/services/durable_genie_session_runtime_factory.py",
+        "app/services/genie_backend_factory.py",
+    }
     for path in app_root.rglob("*.py"):
-        # The factory module itself references its own name only in tests
-        if path.as_posix() == "app/services/durable_genie_session_runtime_factory.py":
+        if path.as_posix() in allowed:
             continue
         text = path.read_text(encoding="utf-8")
         if "durable_genie_session_runtime_factory" in text:
@@ -892,11 +895,15 @@ def test_62_current_runtime_modules_do_not_import_the_new_factory() -> None:
     assert offenders == [], f"unexpected runtime importers: {offenders}"
 
 
-def test_63_genie_backend_factory_unchanged() -> None:
+def test_63_genie_backend_factory_wiring_is_limited_to_phase3d1() -> None:
     text = pathlib.Path("app/services/genie_backend_factory.py").read_text(encoding="utf-8")
-    assert "DurableGenieSessionRuntimeFactory" not in text
-    assert "durable_genie_session_runtime_factory" not in text
+    assert "DurableGenieSessionRuntimeFactory" in text
+    assert "durable_genie_session_runtime_factory" in text
     assert "ConversationRepositoryFactory" not in text
+    assert "durable_genie_session_adapter" not in text
+    assert "lakebase_connection_provider" not in text
+    assert "lakebase_conversation_repository" not in text
+    assert "_durable_session_runtime_bundle" in text
 
 
 def test_64_main_py_unchanged() -> None:

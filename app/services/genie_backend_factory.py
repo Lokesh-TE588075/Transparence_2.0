@@ -20,7 +20,7 @@ Auth note:
 
 import logging
 import threading
-from typing import Optional
+from typing import Any, Optional, Type
 
 from app.services.genie_client import GenieClient
 from app.services.genie_pipeline import GeniePipeline
@@ -28,8 +28,15 @@ from app.services.genie_session_store import GenieSessionStore
 from app.services.audit_service import AuditService
 from app.services.export_job_manager import get_export_job_manager
 from app.services.sql_service import SQLService
+from app.services.durable_genie_session_runtime_factory import (
+    DurableGenieSessionRuntimeFactory,
+    DurableGenieSessionRuntimeFactoryError,
+)
 
 logger = logging.getLogger(__name__)
+
+_DURABLE_RUNTIME_BUNDLE_ATTR = "_durable_session_runtime_bundle"
+_RUNTIME_FACTORY_CLS: Type[DurableGenieSessionRuntimeFactory] = DurableGenieSessionRuntimeFactory
 
 _lock: threading.Lock = threading.Lock()
 _genie_pipeline: Optional[GeniePipeline] = None
@@ -73,11 +80,18 @@ def reset_genie_pipeline() -> None:
     """
     global _genie_pipeline
     with _lock:
+        pipeline = _genie_pipeline
         _genie_pipeline = None
+
+    _close_attached_runtime_bundle(pipeline)
     logger.debug("GeniePipeline singleton reset")
 
 
-def _build_pipeline(user_token: Optional[str] = None) -> GeniePipeline:
+def _build_pipeline(
+    user_token: Optional[str] = None,
+    *,
+    runtime_factory_cls: Type[DurableGenieSessionRuntimeFactory] = _RUNTIME_FACTORY_CLS,
+) -> GeniePipeline:
     """Construct and wire a full Genie pipeline from app settings.
 
     Config is read lazily here (inside the lock) so that any test that
@@ -127,6 +141,21 @@ def _build_pipeline(user_token: Optional[str] = None) -> GeniePipeline:
         summary_top_n=settings.GENIE_SUMMARY_TOP_N,
         enable_computed_chart=settings.GENIE_ENABLE_COMPUTED_CHART,
     )
+
+    runtime_bundle: Optional[Any] = None
+    try:
+        runtime_factory = runtime_factory_cls(environ=settings.model_dump())
+        runtime_bundle = runtime_factory.create(cache_store=store)
+        setattr(pipeline, _DURABLE_RUNTIME_BUNDLE_ATTR, runtime_bundle)
+    except DurableGenieSessionRuntimeFactoryError:
+        _safe_close(runtime_bundle)
+        raise
+    except Exception as exc:
+        _safe_close(runtime_bundle)
+        raise RuntimeError(
+            "Failed to initialize the durable Genie session runtime."
+        ) from exc
+
     logger.info(
         "GeniePipeline built: space_id=%s timeout=%ss debug=%s enrichment=%s summary=%s",
         settings.GENIE_SPACE_ID,
@@ -136,3 +165,29 @@ def _build_pipeline(user_token: Optional[str] = None) -> GeniePipeline:
         settings.GENIE_ENABLE_TABLE_SUMMARY,
     )
     return pipeline
+
+
+def _close_attached_runtime_bundle(pipeline: Optional[GeniePipeline]) -> None:
+    """Close an attached durable runtime bundle exactly once when present."""
+    if pipeline is None:
+        return
+    bundle = getattr(pipeline, _DURABLE_RUNTIME_BUNDLE_ATTR, None)
+    if bundle is None:
+        return
+    try:
+        bundle.close()
+    finally:
+        try:
+            delattr(pipeline, _DURABLE_RUNTIME_BUNDLE_ATTR)
+        except AttributeError:
+            setattr(pipeline, _DURABLE_RUNTIME_BUNDLE_ATTR, None)
+
+
+def _safe_close(resource: Optional[Any]) -> None:
+    """Best-effort close used during failed construction and reset."""
+    close = getattr(resource, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001
+            pass
