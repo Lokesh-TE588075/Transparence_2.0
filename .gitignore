@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Pytest
+.pytest_cache/
+.cache/
+
+# Frontend build artefacts
+frontend/node_modules/
+frontend/dist/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Secrets / credentials
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local databases / caches
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary exports / recovery backups
+recovery_backups/
+baseline_backups/
+*.tmp
+*.bak
+
+# Databricks generated
+.databricks/

@@ -1,0 +1,142 @@
+# Databricks Apps deployment manifest for TransparencE Shipment Chatbot (TransparencE)
+# Docs: https://docs.databricks.com/en/dev-tools/databricks-apps/index.html
+
+command:
+  - "uvicorn"
+  - "app.main:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  - name: DATABRICKS_SQL_WAREHOUSE_PATH
+    description: "HTTP path for the SQL warehouse"
+    value: "/sql/1.0/warehouses/8e46614f7064d8fd"
+  - name: SHIPMENT_TABLE_NAME
+    description: "Fully qualified shipment table (catalog.schema.table)"
+    value: "onedata_fn_ion_dev.ion_l0_raw.lbn_with_scorecard"
+  - name: LLM_ENDPOINT_PRIMARY
+    description: "Databricks Model Serving endpoint for SQL generation and summarization"
+    value: "databricks-claude-sonnet-5"
+  - name: LLM_ENDPOINT_FAST
+    description: "Databricks Model Serving endpoint for intent classification (fast/lightweight)"
+    value: "databricks-gpt-5-4-mini"
+  - name: EXPORT_VOLUME_PATH
+    description: "Path for CSV exports"
+    value: "/tmp/chatbot_exports"
+  - name: FEEDBACK_TABLE_NAME
+    description: "Fully qualified feedback Delta table name"
+    value: "onedata_fn_ion_dev.ion_l0_raw.chatbot_feedback"
+  - name: AUDIT_TABLE_NAME
+    description: "Fully qualified audit log Delta table name"
+    value: "onedata_fn_ion_dev.ion_l0_raw.query_audit_log"
+  - name: CONVERSATIONS_TABLE_NAME
+    description: "Fully qualified conversations Delta table name"
+    value: "onedata_fn_ion_dev.ion_l0_raw.shipmate_conversations"
+  - name: MESSAGES_TABLE_NAME
+    description: "Fully qualified messages Delta table name"
+    value: "onedata_fn_ion_dev.ion_l0_raw.shipmate_messages"
+
+  # --- Phase 7B/8: New Accuracy Pipeline & Delta Conversation State ---
+  - name: USE_NEW_ACCURACY_PIPELINE
+    description: "Enable the new deterministic accuracy pipeline (Phase 7B)"
+    value: "true"
+  - name: USE_DELTA_CONVERSATION_STATE
+    description: "Persist conversation context to Delta table (Phase 8)"
+    value: "true"
+  - name: NEW_PIPELINE_FALLBACK_TO_OLD
+    description: "Fall back to legacy pipeline on unhandled errors (safety net)"
+    value: "true"
+  - name: NEW_PIPELINE_DEBUG
+    description: "Enable verbose debug logging for the new pipeline"
+    value: "false"
+
+  # --- Genie Backend Feature Flags (Phase G4-G8) ---
+  - name: USE_GENIE_BACKEND
+    description: "Route chat requests through the Genie backend (set true for dev/UAT)"
+    value: "true"
+  - name: GENIE_FALLBACK_TO_CUSTOM_PIPELINE
+    description: "Fall back to custom pipeline if Genie fails"
+    value: "true"
+  - name: GENIE_SPACE_ID
+    description: "Genie Space ID for TransparencE Shipment Intelligence"
+    value: "01f17a93e6aa1b97a9da7ef329e15e46"
+  - name: GENIE_RESPONSE_TIMEOUT_SECONDS
+    description: "Max seconds to wait for Genie response"
+    value: "120"
+  - name: GENIE_ENABLE_VISUALIZATION
+    description: "Surface Genie viz attachment in API response"
+    value: "true"
+  - name: GENIE_DEBUG
+    description: "Verbose Genie debug logging"
+    value: "false"
+  - name: GENIE_ENABLE_PROMPT_ENRICHMENT
+    description: "Steer Genie toward analytical summaries for broad questions (Phase G9)"
+    value: "true"
+  - name: GENIE_SHOW_SQL
+    description: "Show generated SQL in UI (false = hidden from normal users)"
+    value: "false"
+  - name: GENIE_MAX_DOWNLOAD_ROWS
+    description: "Maximum rows to include in CSV export from already returned Genie rows"
+    value: "5000"
+  - name: GENIE_TABLE_DISPLAY_ROW_LIMIT
+    description: "Legacy preview row limit for Genie tables"
+    value: "100"
+  - name: GENIE_ASYNC_EXPORT_ENABLED
+    description: "Prepare Genie CSV exports asynchronously"
+    value: "true"
+  - name: GENIE_EXPORT_MODE
+    description: "Export mode: returned_rows_only or async_full_query"
+    value: "returned_rows_only"
+  - name: GENIE_MAX_EXPORT_ROWS
+    description: "Hard cap for async full-query export rows"
+    value: "100000"
+  - name: GENIE_EXPORT_PREVIEW_ROW_LIMIT
+    description: "Rows shown in frontend preview while export runs"
+    value: "100"
+  - name: GENIE_EXPORT_QUERY_TIMEOUT_SECONDS
+    description: "Timeout for async export query execution"
+    value: "300"
+  - name: GENIE_EXPORT_STRIP_LIMIT
+    description: "Remove only a final LIMIT clause from safe SELECT exports"
+    value: "true"
+  - name: GENIE_EXPORT_STATUS_TTL_HOURS
+    description: "How long async export job status is retained in memory"
+    value: "24"
+  - name: GENIE_ENABLE_TABLE_SUMMARY
+    description: "Enable deterministic table summarizer (metrics, summary text, chart data)"
+    value: "true"
+  - name: GENIE_ENABLE_COMPUTED_CHART
+    description: "Enable computed chart from table summarizer output"
+    value: "true"
+
+  # -------------------------------------------------------------------------
+  # Diagnostic Tracing (Phase DIAG)
+  # All flags default to OFF.  Enable TRANSPARENCE_DIAGNOSTIC_TRACING_ENABLED
+  # only for a dedicated diagnostic deployment, never in production.
+  # -------------------------------------------------------------------------
+  - name: TRANSPARENCE_DIAGNOSTIC_TRACING_ENABLED
+    description: "Master switch for end-to-end diagnostic tracing (default: false)"
+    value: "false"
+  - name: TRANSPARENCE_DIAGNOSTIC_STORE
+    description: "Trace storage backend: delta | none"
+    value: "delta"
+  - name: TRANSPARENCE_DIAGNOSTIC_TABLE
+    description: "Fully qualified Delta table for diagnostic traces"
+    value: "onedata_fn_ion_dev.ion_l0_raw.transparence_diagnostic_trace"
+  - name: TRANSPARENCE_DIAGNOSTIC_LOG_PROMPT_EXCERPT
+    description: "Include safe prompt excerpts in traces"
+    value: "true"
+  - name: TRANSPARENCE_DIAGNOSTIC_LOG_SQL
+    description: "Include full SQL in traces (DISABLED by default — security sensitive)"
+    value: "false"
+  - name: TRANSPARENCE_DIAGNOSTIC_PROMPT_EXCERPT_LENGTH
+    description: "Maximum characters for prompt/SQL excerpts in traces"
+    value: "200"
+  - name: TRANSPARENCE_DIAGNOSTIC_TTL_DAYS
+    description: "Days before trace rows become eligible for TTL cleanup"
+    value: "7"
+  - name: TRANSPARENCE_DEPLOYMENT_ID
+    description: "Active deployment ID tag written to each trace row (set before soak test)"
+    value: ""

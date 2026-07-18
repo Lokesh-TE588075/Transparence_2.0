@@ -1,0 +1,27 @@
+# Frontend build dependencies — only static/ output is needed at runtime
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# Frontend source (compiled into static/ by Vite build)
+frontend/src/
+frontend/package-lock.json
+frontend/package.json
+frontend/vite.config.js
+frontend/index.html
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# Dev/local secrets
+.env
+.env.*
+
+# Test files (not needed at runtime)
+tests/

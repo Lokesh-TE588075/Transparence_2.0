@@ -1,0 +1,27 @@
+# TransparencE Shipment Chatbot - Dependencies
+# Databricks Apps deployment
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+
+# Databricks connectivity
+databricks-sdk>=0.40.0
+databricks-sql-connector>=3.0.0
+
+# LLM client (Databricks Model Serving uses OpenAI-compatible API)
+openai>=1.0.0
+
+# SQL parsing and validation
+sqlparse>=0.5.0
+
+# Business rules - fuzzy matching
+rapidfuzz>=3.10.0
+
+# Data processing
+pandas>=2.2.0
+
+# Utilities
+python-dotenv>=1.0.0
