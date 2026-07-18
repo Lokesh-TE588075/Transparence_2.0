@@ -13,6 +13,35 @@ Live smoke suites are separate files excluded from this run.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Import-isolation preamble  (must precede all 'from app.' imports)
+# ---------------------------------------------------------------------------
+# tests/test_chat_pipeline.py contains a module-level:
+#   sys.path.insert(0, "/Workspace/.../transparence_app")
+# When pytest collects that file before this one (alphabetically
+# 'chat' < 'conversation'), the 'app' package is loaded from the
+# transparence_app project, which does not contain
+# app.services.conversation_repository.
+# This block detects the wrong load and evicts 'app.*' from
+# sys.modules so Python re-imports from this repo's 'app' package.
+import os as _os
+import sys as _sys
+
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_EXPECTED_APP = _os.path.realpath(_os.path.join(_REPO_ROOT, 'app', '__init__.py'))
+
+if 'app' in _sys.modules:
+    _loaded = _os.path.realpath(getattr(_sys.modules['app'], '__file__', '') or '')
+    if _loaded != _EXPECTED_APP:
+        for _k in [k for k in _sys.modules if k == 'app' or k.startswith('app.')]:
+            del _sys.modules[_k]
+
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
+
+del _os, _sys, _REPO_ROOT, _EXPECTED_APP
+# ---------------------------------------------------------------------------
+
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone

@@ -3,7 +3,8 @@
 Phase 2A — Conversation Repository Contract, Domain Model,
 In-Memory Reference Implementation, and Unit Tests
 
-Date: 2026-07-18
+Date: 2026-07-18  
+Validation date: 2026-07-18
 
 ---
 
@@ -13,10 +14,10 @@ Date: 2026-07-18
 
 **Command:**
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. pytest -q tests/test_conversation_repository.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -q tests/test_conversation_repository.py
 ```
 
-**Result: 87/87 PASSED (0.89 s)**
+**Result: 87/87 PASSED (0.18 s)**
 
 ### Test breakdown by category
 
@@ -45,69 +46,78 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. pytest -q tests/test_conversation_reposit
 
 **Command:**
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. pytest -q \
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -q \
   tests/test_genie_session_store.py \
   tests/test_genie_session_store_context.py \
   tests/test_multi_user_session_isolation.py
 ```
 
-**Result:** 49 passed, 11 pre-existing failures
+**Result: 60/60 PASSED (3.18 s)**
 
-**Pre-existing failures:** 11 tests in `TestServerConversationKeyComposition`,
-`TestExportIsolation`, and `TestUserHeaderExtraction` (all in
-`test_multi_user_session_isolation.py`) fail with
-`ModuleNotFoundError: No module named 'pydantic_settings'`.
-This is a serverless notebook environment issue where the production dependency
-`pydantic_settings` is not pre-installed.  These failures exist on the baseline
-branch and are not caused by Phase 2A.
+Zero failures.  One pre-existing PydanticDeprecatedSince20 warning
+(class-based `config` in existing code); not introduced by Phase 2A.
+
+**Earlier run (before dependency install) showed 49 passed, 11 failures.**
+Root cause: `pydantic-settings` and `rapidfuzz` were installed into the notebook
+Python (`/local_disk0/.ephemeral_nfs/.../bin/python`) but `pytest` binary uses a
+different interpreter (`/databricks/python3/bin/python`).  After installing into
+the correct interpreter, all 60 tests pass.
 
 ---
 
-## 3. Full Non-Live Suite
+## 3. Import-Order Isolation
+
+**Run A** (test_chat_pipeline.py first, then test_conversation_repository.py):
+
+- **Before fix:** 1 collection error — `ModuleNotFoundError: No module named
+  'app.services.conversation_repository'`
+- **After fix:** 103/103 PASS
+
+**Run B** (test_conversation_repository.py first, then test_chat_pipeline.py):
+
+- Before and after fix: 103/103 PASS
+
+**Root cause:** `tests/test_chat_pipeline.py` line 14 contains:
+```python
+sys.path.insert(0, "/Workspace/Users/lokesh.choraria@te.com/Transparence/transparence_app")
+```
+This module-level mutation prepends the legacy project directory, causing `app`
+to be loaded from there.  Alphabetically `test_chat_pipeline.py` precedes
+`test_conversation_repository.py`, so in a full suite run the `app` namespace is
+poisoned before the Phase 2A test is collected.
+
+**Fix applied in `tests/test_conversation_repository.py`:** an import-isolation
+preamble (after `from __future__ import annotations`, before any `from app.`
+imports) that:
+1. Computes `_REPO_ROOT` from `__file__` (absolute, resolved)
+2. If `sys.modules['app']` is loaded from a path other than `_REPO_ROOT/app/__init__.py`,
+   evicts all `app.*` entries from `sys.modules`
+3. Ensures `_REPO_ROOT` is on `sys.path`
+4. Deletes the temporary `_` variables
+
+This fix does not modify `test_chat_pipeline.py` or any production module.
+
+---
+
+## 4. Full Non-Live Suite
 
 **Command:**
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. pytest -q \
-  --continue-on-collection-errors \
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python -m pytest -q \
   --ignore=tests/test_genie_live_smoke.py \
   --ignore=tests/test_genie_integration_smoke.py \
   --ignore=tests/test_delta_state_live_smoke.py \
   --ignore=tests/test_new_pipeline_live_smoke.py
 ```
 
-**Result:** 772 passed, 9 collection errors
+**Result: 998/998 PASSED (8.50 s)**
 
-### Collection errors (all pre-existing)
-
-| File | Root cause |
-|------|------------|
-| `test_chat_pipeline.py` | `ModuleNotFoundError: rapidfuzz` (not installed in serverless) |
-| `test_conversation_followups.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_conversation_repository.py` | App namespace pollution (see note below) |
-| `test_conversation_state_cleanup.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_conversation_state_factory.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_delivery_date_normalizer.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_delta_conversation_state.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_deterministic_followup.py` | `ModuleNotFoundError: rapidfuzz` |
-| `test_input_normalizer.py` | `ModuleNotFoundError: rapidfuzz` |
-
-**Note on `test_conversation_repository.py` in full-suite collection:**
-When pytest collects all test files together in alphabetical order,
-`test_chat_pipeline.py` is collected before `test_conversation_repository.py`.
-That file imports `app.services.chat_pipeline`, which in the serverless notebook
-environment resolves to `../transparence_app/app/services/chat_pipeline.py`
-(a separate legacy project on the system path).  This poisons `sys.modules['app']`
-with the `../transparence_app/app/` package.  When my test is subsequently
-collected, `from app.services.conversation_repository import ...` fails because
-`sys.modules['app']` now points to the wrong project directory.
-
-**This is an environment artifact, not a defect in the Phase 2A code.**
-Confirmation: running `test_conversation_repository.py` in isolation gives **87/87 PASS**.
-Running it first in a combined invocation (before the poisoning files) also gives **87 PASS**.
+Zero failures.  Zero collection errors.  One pre-existing PydanticDeprecatedSince20
+warning.
 
 ---
 
-## 4. Excluded Live Tests
+## 5. Excluded Live Tests
 
 The following four files were excluded from all runs:
 
@@ -120,18 +130,19 @@ These require a live Databricks warehouse and Genie Space and are never run in C
 
 ---
 
-## 5. Baseline Comparison
+## 6. Baseline Comparison
 
-| Metric | Baseline (apps container) | Phase 2A (serverless notebook) |
-|--------|--------------------------|--------------------------------|
-| Non-live tests passing | 911 | 772 (no rapidfuzz/app-namespace) + 87 new (isolated) |
+| Metric | Baseline | Phase 2A (validated) |
+|--------|----------|----------------------|
+| Non-live tests passing | 911 | 998 (911 + 87 new) |
 | New Phase 2A tests | 0 | 87 |
-| Pre-existing collection errors | 0 (full deps present) | 9 (env limitations) |
+| Collection errors | 0 | 0 |
+| Failures | 0 | 0 |
 | Failures caused by Phase 2A | n/a | 0 |
 
 ---
 
-## 6. Dependency Audit
+## 7. Dependency Audit
 
 The production module `app/services/conversation_repository.py` imports only:
 
@@ -145,3 +156,12 @@ The production module `app/services/conversation_repository.py` imports only:
 
 All are Python standard library modules.  No new entry was added to `requirements.txt`.
 No Lakebase, psycopg, or SQLAlchemy import exists anywhere in the file.
+
+**Test dependencies installed into pytest interpreter
+(`/databricks/python3/bin/python`) during validation:**
+- `pydantic-settings==2.14.2`
+- `rapidfuzz==3.14.5`
+
+These are pre-existing project dependencies (`requirements.txt` already lists
+`pydantic-settings`; `rapidfuzz` is used by existing services).  They are not new
+Phase 2A requirements.

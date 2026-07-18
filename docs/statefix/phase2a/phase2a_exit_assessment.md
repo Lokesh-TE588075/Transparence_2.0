@@ -3,7 +3,8 @@
 Phase 2A — Conversation Repository Contract, Domain Model,
 In-Memory Reference Implementation, and Unit Tests
 
-Date: 2026-07-18
+Date: 2026-07-18  
+Validation date: 2026-07-18
 
 ---
 
@@ -17,6 +18,7 @@ Date: 2026-07-18
 |-----------|--------|
 | Domain model (`ConversationRecord`, `ConversationStatus`) exists | PASS |
 | Repository interface (`ConversationRepository` Protocol) exists | PASS |
+| Interface declares exactly 10 methods | PASS |
 | In-memory reference implementation (`InMemoryConversationRepository`) exists | PASS |
 | User ownership is enforced (cross-owner returns None / raises NotFound) | PASS |
 | Idempotent create works (duplicate logical key returns same record) | PASS |
@@ -24,9 +26,33 @@ Date: 2026-07-18
 | Thread-safety tests pass (concurrent creates, concurrent CAS, index consistency) | PASS |
 | No external dependency introduced | PASS |
 | All new repository tests pass in isolation (87/87) | PASS |
+| All new repository tests pass in both import orders (Run A and Run B) | PASS |
+| Relevant regression tests pass (60/60) | PASS |
+| Complete non-live suite passes (998/998, zero errors) | PASS |
 | No existing runtime module changed | PASS |
-| Branch pushed and clean | PASS (see commit below) |
+| Branch pushed and clean | PASS (see commits below) |
 | Nothing deployed | PASS |
+
+---
+
+## Repository Interface: Method Count
+
+`ConversationRepository` declares exactly **10 methods**:
+
+1. `get_by_id`
+2. `get_by_frontend_id`
+3. `create_conversation`
+4. `bind_genie_conversation`
+5. `update_last_genie_message`
+6. `touch`
+7. `set_status`
+8. `compare_and_update`
+9. `list_for_owner`
+10. `delete_conversation`
+
+Note: an earlier session summary incorrectly stated 11 methods.  The actual
+Protocol has 10.  No production code was changed; this is a documentation
+correction only.
 
 ---
 
@@ -43,6 +69,28 @@ Date: 2026-07-18
 
 ---
 
+## Files Modified During Validation
+
+| File | Change |
+|------|--------|
+| `tests/test_conversation_repository.py` | Added import-isolation preamble (see below) |
+| `docs/statefix/phase2a/test_report.md` | Updated with validated results |
+| `docs/statefix/phase2a/phase2a_exit_assessment.md` | Updated with validated results and method count |
+| `docs/statefix/phase2a/repository_contract.md` | Added explicit method count |
+
+### Import-isolation fix
+
+`test_chat_pipeline.py` line 14 does `sys.path.insert(0, transparence_app_path)`
+at module level.  Alphabetically this file is collected before
+`test_conversation_repository.py`, poisoning `sys.modules['app']`.
+
+Fix: added a preamble after `from __future__ import annotations` that detects
+whether `app` was loaded from the wrong location and evicts `app.*` from
+`sys.modules` before any `from app.services.conversation_repository import ...`
+executes.  No production module and no pre-existing test file was modified.
+
+---
+
 ## Files NOT Modified
 
 - `app/routes/chat.py` — unchanged
@@ -53,7 +101,7 @@ Date: 2026-07-18
 - `app/main.py` — unchanged
 - `app.yaml` — unchanged
 - `requirements.txt` — unchanged
-- All other existing source and test files — unchanged
+- All other pre-existing source and test files — unchanged
 
 ---
 
@@ -62,12 +110,27 @@ Date: 2026-07-18
 | Suite | Result |
 |-------|--------|
 | New repository tests (isolated) | 87/87 PASS |
-| Genie session store regression | 49/60 pass (11 pre-existing `pydantic_settings` failures) |
-| Full non-live suite (with `--continue-on-collection-errors`) | 772 pass, 9 pre-existing collection errors |
+| Relevant regression tests | 60/60 PASS |
+| Import-order Run A (chat_pipeline first) | 103/103 PASS |
+| Import-order Run B (conversation_repository first) | 103/103 PASS |
+| Complete non-live suite | **998/998 PASS — zero failures, zero collection errors** |
 | Live smoke tests | Excluded (as specified) |
 
-All failures and collection errors are pre-existing in the serverless notebook
-test environment.  Zero failures were introduced by Phase 2A.
+---
+
+## Scope Compliance Audit
+
+| Item | Status |
+|------|--------|
+| `conversation_repository.py` uses standard library only | PASS (7 stdlib modules) |
+| Importing it does not read environment variables | PASS (0 `os.environ` / `getenv` refs) |
+| Importing it does not create threads | PASS (RLock created only in `__init__`) |
+| Importing it does not access Databricks | PASS |
+| No SQL or Lakebase code exists | PASS (word appears only in docstrings) |
+| No raw email or Databricks user identifier field on record | PASS (`owner_user_id_hash` only) |
+| In-memory implementation documented as non-durable | PASS (WARNING in `in_memory_repository.md`) |
+| Module not imported by any production path | PASS |
+| Line count | 854 lines (standard library + docstrings + implementation) |
 
 ---
 
@@ -82,18 +145,22 @@ test environment.  Zero failures were introduced by Phase 2A.
 
 ---
 
+## Commits
+
+| Commit | Description |
+|--------|-------------|
+| `3667e3e79b947a644b28161f20db59fe60ff30a3` | `Add conversation repository contract and in-memory reference implementation` (Phase 2A implementation) |
+| Validation commit (see test_report.md) | `Validate Phase 2A repository implementation and regression suite` |
+
+---
+
 ## Phase 2B Readiness
 
-Phase 2B (Lakebase repository implementation) is safe to begin under the following
-conditions:
-
-1. `LakebaseConversationRepository` must be created as a NEW file in `app/services/`
-   (proposed: `app/services/lakebase_conversation_repository.py`).
-2. It must implement the `ConversationRepository` Protocol defined in Phase 2A.
-3. All 87 tests in `tests/test_conversation_repository.py` must pass against the
-   Lakebase implementation without modification to the test file.
-4. The `InMemoryConversationRepository` must remain as the default for unit tests.
-5. No production runtime wiring should happen until Phase 2C (identity integration)
-   is complete.
-6. The known session lifecycle gap (in-memory `GenieSessionStore` loses state on
-   container cold-start) is addressed by Phase 2B + 2C together, not by Phase 2B alone.
+Phase 2B may begin.  Prerequisites:
+- `LakebaseConversationRepository` must be created as a NEW file
+  (`app/services/lakebase_conversation_repository.py`)
+- It must implement the `ConversationRepository` Protocol
+- The 87 tests in `test_conversation_repository.py` must pass against it
+  without modification
+- A Lakebase Postgres table matching the SQL mapping in `repository_contract.md`
+  must be provisioned

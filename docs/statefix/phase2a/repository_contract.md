@@ -54,7 +54,7 @@ An immutable (`frozen=True`) dataclass representing one tracked conversation.
 ## Repository Interface
 
 `ConversationRepository` is a `@runtime_checkable Protocol` in
-`app.services.conversation_repository`.
+`app.services.conversation_repository` and declares exactly **10 methods**.
 
 ### Lookup Operations
 
