@@ -9,17 +9,6 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-_ps_mock = types.ModuleType("pydantic_settings")
-
-
-class _FakeBaseSettingsStub:
-    def __init__(self, **kwargs: Any) -> None:
-        pass
-
-
-_ps_mock.BaseSettings = _FakeBaseSettingsStub
-sys.modules.setdefault("pydantic_settings", _ps_mock)
-
 from app.services.durable_genie_session_runtime_factory import (
     DurableGenieSessionRuntimeInitializationError,
 )
