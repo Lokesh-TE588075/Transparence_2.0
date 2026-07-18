@@ -3,18 +3,19 @@
 ## Verdict: PASS
 
 Phase 3D2 (FastAPI Lifecycle Cleanup for Durable Genie Runtime) is
-complete. All acceptance criteria met.
+complete. All acceptance criteria met including shutdown-log sanitization.
 
 ## Files Changed
 
 ### Production (1 file)
 - `app/main.py` — added `reset_genie_pipeline` import and shutdown
-  integration in lifespan finally block.
+  integration in lifespan finally block. Error logging uses static
+  message only (no exc_info, no exception interpolation).
 
 ### Tests (1 file)
-- `tests/test_main_durable_runtime_lifecycle.py` — 51 test cases
+- `tests/test_main_durable_runtime_lifecycle.py` — 57 test cases
   covering application compatibility, startup safety, shutdown
-  behaviour, exception paths, and runtime boundaries.
+  behaviour, exception-path sanitization, and runtime boundaries.
 
 ### Documentation (5 files)
 - `docs/statefix/phase3d2/fastapi_lifecycle_wiring.md`
@@ -36,6 +37,13 @@ complete. All acceptance criteria met.
 - `frontend/`
 - `migrations/`
 
+## Shutdown Error Sanitization
+
+Reset failures are logged using a static sanitized message only.
+Exception text and traceback are intentionally omitted to prevent
+lower-layer connection or credential details from appearing in logs.
+Shutdown continues after the cleanup failure.
+
 ## Phase 4 Gate
 
 Phase 4A (owner-identity derivation) is safe to begin. Prerequisites:
@@ -44,6 +52,7 @@ Phase 4A (owner-identity derivation) is safe to begin. Prerequisites:
 - Pipeline lazy initialization is preserved.
 - The factory's `reset_genie_pipeline()` correctly cascades through
   `_close_attached_runtime_bundle` to drain the pool.
+- Shutdown logging is sanitized against credential leakage.
 
 Phase 4A can proceed without risk to the lifecycle contract established
 here.

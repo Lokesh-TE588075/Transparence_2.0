@@ -38,14 +38,21 @@
 - Repeated lifespan runs safe
 - Existing shutdown operations preserved
 
-### TestExceptionPaths (7 tests)
+### TestExceptionPaths (16 tests)
 - Reset attempted when body raises
 - Existing shutdown preserved on exception
-- Reset failure handled gracefully
-- Error output: no host
-- Error output: no endpoint
-- Error output: no credential
+- Reset failure handled gracefully (static message verified)
+- Error output: no host leaked
+- Error output: no endpoint leaked
+- Error output: no credential leaked
+- Error output: no password/DSN leaked
+- No exc_info=True in error call
+- No stack_info=True in error call
+- No logger.exception used
+- No positional exception argument (only static message)
 - No retry loop
+- Shutdown completes after reset failure
+- Body exception propagates despite reset failure
 
 ### TestRuntimeBoundaries (7 tests)
 - chat.py unchanged
@@ -68,19 +75,30 @@
 - No WorkspaceClient import
 - Concurrent lifespan isolation
 
+## Sanitization Tests (Key Addition)
+
+Tests 29-32f specifically verify that when `reset_genie_pipeline()`
+raises an exception containing sensitive values:
+
+- `host=prod.internal`
+- `endpoint=projects/private/branches/production`
+- `dapi-secret-token-12345`
+- `password=secret`
+- `postgresql://user:password@host/database`
+
+The logger.error call:
+- Contains only the static message "Genie pipeline cleanup failed during shutdown"
+- Has exactly one positional argument (no exception interpolation)
+- Has no `exc_info=True`
+- Has no `stack_info=True`
+- Does not use `logger.exception`
+- Contains none of the sensitive values in any position
+
 ## Results
 
 | Suite | Passed | Failed | Errors |
 |-------|--------|--------|--------|
-| Focused Phase 3D2 | 51 | 0 | 0 |
-| Phase 3D1 + 3D2 | 71 | 0 | 0 |
-| Combined persistence/composition/lifecycle | 621 | 0 | 0 |
-| Complete non-live | 1448 | 0 | 0 |
-
-## Baseline Comparison
-
-| Metric | Phase 3D1 Exit | Phase 3D2 Exit | Delta |
-|--------|---------------|----------------|-------|
-| Focused tests | 20 | 51 | +31 |
-| Combined | 486 | 621 | +135 |
-| Full non-live | 1397 | 1448 | +51 |
+| Focused Phase 3D2 | 57 | 0 | 0 |
+| Phase 3D1 + 3D2 | 77 | 0 | 0 |
+| Combined persistence/composition/lifecycle | 627 | 0 | 0 |
+| Complete non-live | 1454 | 0 | 0 |

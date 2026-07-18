@@ -42,10 +42,7 @@ async def lifespan(app: FastAPI):
         try:
             reset_genie_pipeline()
         except Exception:
-            logger.error(
-                "Genie pipeline cleanup failed during shutdown",
-                exc_info=True,
-            )
+            logger.error("Genie pipeline cleanup failed during shutdown")
 
 
 # Create FastAPI application

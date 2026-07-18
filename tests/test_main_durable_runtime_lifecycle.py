@@ -373,7 +373,24 @@ class TestShutdownBehaviour:
 # ---------------------------------------------------------------------------
 
 class TestExceptionPaths:
-    """Tests 27-33: reset attempted even on errors."""
+    """Tests 27-33: reset attempted even on errors, logging fully sanitized."""
+
+    # --- Helper ---
+    def _assert_sanitized_error_call(self, mock_logger, sensitive_values):
+        """Assert logger.error was called with ONLY the static message, no extras."""
+        mock_logger.error.assert_called_once()
+        error_call = mock_logger.error.call_args
+        # Positional args: only the static message, no exception arg
+        assert error_call[0] == ("Genie pipeline cleanup failed during shutdown",)
+        # Keyword args: no exc_info, no stack_info
+        assert error_call[1].get("exc_info") is None or error_call[1].get("exc_info") is False
+        assert error_call[1].get("stack_info") is None or error_call[1].get("stack_info") is False
+        # No sensitive values anywhere in the call representation
+        call_repr = str(error_call)
+        for val in sensitive_values:
+            assert val not in call_repr, f"Sensitive value {val!r} leaked into log call"
+        # Must NOT use logger.exception (which implies exc_info=True)
+        mock_logger.exception.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_27_reset_attempted_when_lifespan_body_raises(self):
@@ -409,12 +426,12 @@ class TestExceptionPaths:
                 # Should NOT raise
                 async with lifespan(the_app):
                     pass
-                # Error should be logged
-                mock_logger.error.assert_called()
+                # Error should be logged with static message only
+                self._assert_sanitized_error_call(mock_logger, ["cleanup exploded"])
 
     @pytest.mark.asyncio
     async def test_30_error_output_contains_no_host(self):
-        """Logged error from reset failure must not contain host info."""
+        """Logged error must not leak host from exception."""
         from app.main import lifespan, app as the_app
         with patch(
             "app.main.reset_genie_pipeline",
@@ -423,30 +440,31 @@ class TestExceptionPaths:
             with patch("app.main.logger") as mock_logger:
                 async with lifespan(the_app):
                     pass
-                # The logger.error first arg is the format string
-                error_call = mock_logger.error.call_args
-                format_str = error_call[0][0] if error_call[0] else ""
-                assert "prod.internal" not in format_str
-                assert "token=" not in format_str
+                self._assert_sanitized_error_call(
+                    mock_logger, ["prod.internal", "token=", "secret"]
+                )
 
     @pytest.mark.asyncio
     async def test_31_error_output_contains_no_endpoint(self):
-        """Logged error from reset failure must not contain endpoint info."""
+        """Logged error must not leak endpoint resource path."""
         from app.main import lifespan, app as the_app
         with patch(
             "app.main.reset_genie_pipeline",
-            side_effect=RuntimeError("endpoint=projects/secret-proj/branches/main"),
+            side_effect=RuntimeError(
+                "endpoint=projects/secret-proj/branches/production"
+            ),
         ):
             with patch("app.main.logger") as mock_logger:
                 async with lifespan(the_app):
                     pass
-                error_call = mock_logger.error.call_args
-                format_str = error_call[0][0] if error_call[0] else ""
-                assert "projects/" not in format_str
+                self._assert_sanitized_error_call(
+                    mock_logger,
+                    ["projects/", "secret-proj", "branches/production"],
+                )
 
     @pytest.mark.asyncio
     async def test_32_error_output_contains_no_credential(self):
-        """Logged error from reset failure must not contain credentials."""
+        """Logged error must not leak credentials or tokens."""
         from app.main import lifespan, app as the_app
         with patch(
             "app.main.reset_genie_pipeline",
@@ -455,9 +473,84 @@ class TestExceptionPaths:
             with patch("app.main.logger") as mock_logger:
                 async with lifespan(the_app):
                     pass
+                self._assert_sanitized_error_call(
+                    mock_logger, ["dapi-", "secret-token", "12345"]
+                )
+
+    @pytest.mark.asyncio
+    async def test_32b_error_output_contains_no_password(self):
+        """Logged error must not leak passwords or DSNs."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError(
+                "postgresql://user:password@host/database"
+            ),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
+                self._assert_sanitized_error_call(
+                    mock_logger,
+                    ["postgresql://", "password", "user:", "@host"],
+                )
+
+    @pytest.mark.asyncio
+    async def test_32c_no_exc_info_in_error_call(self):
+        """logger.error must NOT pass exc_info=True."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("secret-payload"),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
                 error_call = mock_logger.error.call_args
-                format_str = error_call[0][0] if error_call[0] else ""
-                assert "dapi-" not in format_str
+                assert error_call[1].get("exc_info") in (None, False)
+
+    @pytest.mark.asyncio
+    async def test_32d_no_stack_info_in_error_call(self):
+        """logger.error must NOT pass stack_info=True."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("secret-payload"),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
+                error_call = mock_logger.error.call_args
+                assert error_call[1].get("stack_info") in (None, False)
+
+    @pytest.mark.asyncio
+    async def test_32e_no_logger_exception_used(self):
+        """main.py must not use logger.exception for reset failures."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("secret-payload"),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
+                mock_logger.exception.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_32f_error_has_no_positional_exception_arg(self):
+        """logger.error must have exactly one positional arg (the static msg)."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("password=secret"),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
+                error_call = mock_logger.error.call_args
+                # Only one positional arg: the static message string
+                assert len(error_call[0]) == 1
+                assert error_call[0][0] == "Genie pipeline cleanup failed during shutdown"
 
     @pytest.mark.asyncio
     async def test_33_no_retry_loop_on_failure(self):
@@ -471,6 +564,35 @@ class TestExceptionPaths:
             async with lifespan(the_app):
                 pass
             assert len(call_count) == 1
+
+    @pytest.mark.asyncio
+    async def test_33b_shutdown_completes_after_reset_failure(self):
+        """Application shutdown finishes even if reset raises."""
+        from app.main import lifespan, app as the_app
+        shutdown_completed = []
+        original_info = MagicMock()
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("fail"),
+        ):
+            with patch("app.main.logger") as mock_logger:
+                async with lifespan(the_app):
+                    pass
+                # Shutdown log was emitted (proves shutdown ran to completion)
+                info_calls = [str(c) for c in mock_logger.info.call_args_list]
+                assert any("Shutting down" in s for s in info_calls)
+
+    @pytest.mark.asyncio
+    async def test_33c_body_exception_propagates_despite_reset_failure(self):
+        """If lifespan body raises AND reset raises, body exception propagates."""
+        from app.main import lifespan, app as the_app
+        with patch(
+            "app.main.reset_genie_pipeline",
+            side_effect=RuntimeError("reset fail"),
+        ):
+            with pytest.raises(ValueError, match="app crash"):
+                async with lifespan(the_app):
+                    raise ValueError("app crash")
 
 
 # ---------------------------------------------------------------------------
