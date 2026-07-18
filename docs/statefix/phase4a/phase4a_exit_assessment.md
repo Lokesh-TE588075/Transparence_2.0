@@ -29,6 +29,18 @@ The repository now contains a standard-library-only owner identity module, a foc
 * did not execute SQL
 * did not deploy or restart the app
 
+## Test results (corrected after transient plugin installation)
+
+`pytest-asyncio` was installed transiently for the validation rerun.
+It is not in `requirements.txt` and was not added there.
+All existing async lifecycle tests executed fully; none were skipped.
+
+| Suite | Passed | Skipped | Failed |
+|-------|--------|---------|--------|
+| Focused Phase 4A | 84 | 0 | 0 |
+| Combined persistence/composition/lifecycle/identity | 712 | 0 | 0 |
+| Complete non-live | 1539 | 0 | 0 |
+
 ## Phase 4B gate
 
 Phase 4B may begin only if it preserves the Phase 4A security boundary:

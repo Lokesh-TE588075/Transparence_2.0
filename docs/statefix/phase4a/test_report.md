@@ -1,5 +1,12 @@
 # Phase 4A Test Report
 
+## Validation environment
+
+`pytest-asyncio` (version 1.4.0) was installed transiently into the ephemeral test environment.
+It is not listed in `requirements.txt` and was not added there.
+Installing it allowed all existing async lifecycle tests in `test_main_durable_runtime_lifecycle.py` to execute.
+No test was skipped in any suite.
+
 ## New focused suite
 
 Command:
@@ -9,6 +16,7 @@ Command:
 Result:
 
 * 84 passed
+* 0 skipped
 * 0 failed
 * 0 collection errors
 
@@ -18,25 +26,32 @@ Coverage includes configuration loading, canonicalization, header matching, HMAC
 
 Command included:
 
-* `tests/test_conversation_repository.py`
-* `tests/test_lakebase_connection_provider.py`
 * `tests/test_lakebase_conversation_repository.py`
-* `tests/test_conversation_repository_factory.py`
+* `tests/test_lakebase_connection_provider.py`
 * `tests/test_durable_genie_session_adapter.py`
 * `tests/test_durable_genie_session_runtime_factory.py`
 * `tests/test_genie_backend_durable_runtime_wiring.py`
 * `tests/test_main_durable_runtime_lifecycle.py`
+* `tests/test_conversation_repository.py`
+* `tests/test_conversation_repository_factory.py`
+* `tests/test_conversation_state_cleanup.py`
+* `tests/test_conversation_state_factory.py`
+* `tests/test_delta_conversation_state.py`
+* `tests/test_genie_session_store.py`
+* `tests/test_genie_session_store_context.py`
+* `tests/test_multi_user_session_isolation.py`
 * `tests/test_request_owner_identity.py`
 
 Result:
 
-* 592 passed
-* 36 skipped
+* 712 passed
+* 0 skipped
 * 0 failed
 * 0 collection errors
 
-The skipped tests were pre-existing async lifecycle tests in `test_main_durable_runtime_lifecycle.py` because the temporary runner did not include an async pytest plugin.
-This Phase 4A change did not introduce those skips.
+All existing async lifecycle tests executed with `pytest-asyncio` present.
+No test was skipped.
+Previous combined baseline was 628 passed (Phase 3D2 exit); adding 84 Phase 4A tests gives 712.
 
 ## Full non-live suite
 
@@ -49,10 +64,14 @@ Command excluded exactly:
 
 Result:
 
-* 1503 passed
-* 36 skipped
+* 1539 passed
+* 0 skipped
 * 0 failed
 * 0 collection errors
+
+Previous non-live baseline was 1455 passed (Phase 3D2 exit); adding 84 Phase 4A tests gives 1539.
+All async lifecycle tests executed; none were skipped due to missing plugin.
+`requirements.txt` was not modified.
 
 ## Scope validation
 
