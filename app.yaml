@@ -140,3 +140,10 @@ env:
   - name: TRANSPARENCE_DEPLOYMENT_ID
     description: "Active deployment ID tag written to each trace row (set before soak test)"
     value: ""
+
+  # --- Phase 2C: Lakebase connection provider ---
+  # valueFrom references the 'postgres' resource key declared in the app resource
+  # configuration. Databricks Apps injects the endpoint resource name at runtime.
+  # Do NOT hardcode the endpoint path here.
+  - name: LAKEBASE_ENDPOINT_NAME
+    valueFrom: postgres

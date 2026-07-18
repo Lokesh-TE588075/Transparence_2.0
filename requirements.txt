@@ -8,8 +8,13 @@ pydantic>=2.9.0
 pydantic-settings>=2.5.0
 
 # Databricks connectivity
-databricks-sdk>=0.40.0
+databricks-sdk>=0.118.0
 databricks-sql-connector>=3.0.0
+
+# PostgreSQL driver and pool (Lakebase connection provider)
+# psycopg[binary] bundles libpq so no system-level dependency is needed.
+# psycopg[pool] pulls in psycopg_pool which provides ConnectionPool.
+psycopg[binary,pool]>=3.1.0
 
 # LLM client (Databricks Model Serving uses OpenAI-compatible API)
 openai>=1.0.0
