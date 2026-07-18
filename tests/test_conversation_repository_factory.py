@@ -763,10 +763,15 @@ def test_bundle_exposes_repository_contract() -> None:
 
 
 def test_no_existing_runtime_module_imports_the_factory() -> None:
+    # Only this one approved Phase 3C module is permitted to import the factory.
+    # All other application modules must not import conversation_repository_factory.
+    _APPROVED_IMPORTER = "app/services/durable_genie_session_runtime_factory.py"
     app_root = pathlib.Path("app")
     offenders: List[str] = []
     for path in app_root.rglob("*.py"):
         if path.name == "conversation_repository_factory.py":
+            continue
+        if path.as_posix() == _APPROVED_IMPORTER:
             continue
         text = path.read_text(encoding="utf-8")
         if "conversation_repository_factory" in text:

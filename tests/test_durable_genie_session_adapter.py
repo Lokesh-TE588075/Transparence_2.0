@@ -886,10 +886,15 @@ def test_no_sql_execution() -> None:
 
 
 def test_adapter_not_imported_by_existing_runtime_modules() -> None:
+    # Only this one approved Phase 3C module is permitted to import the adapter.
+    # All other application modules must not import durable_genie_session_adapter.
+    _APPROVED_IMPORTER = "app/services/durable_genie_session_runtime_factory.py"
     app_root = pathlib.Path("app")
     offenders = []
     for path in app_root.rglob("*.py"):
         if path.as_posix() == "app/services/durable_genie_session_adapter.py":
+            continue
+        if path.as_posix() == _APPROVED_IMPORTER:
             continue
         text = path.read_text(encoding="utf-8")
         if "durable_genie_session_adapter" in text:

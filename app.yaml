@@ -147,3 +147,18 @@ env:
   # Do NOT hardcode the endpoint path here.
   - name: LAKEBASE_ENDPOINT_NAME
     valueFrom: postgres
+
+  # -------------------------------------------------------------------------
+  # Phase 3C: Durable Genie session persistence — disabled-by-default flags.
+  # All three entries must remain false/memory until Phase 3D integration is
+  # explicitly activated.  Do not enable without the Phase 3D gate.
+  # -------------------------------------------------------------------------
+  - name: ENABLE_DURABLE_GENIE_SESSION_ADAPTER
+    description: "Enable the durable Genie session persistence adapter (Phase 3C/3D — disabled by default)"
+    value: "false"
+  - name: CONVERSATION_REPOSITORY_BACKEND
+    description: "Conversation repository backend selection: memory or lakebase (default: memory)"
+    value: "memory"
+  - name: ENABLE_LAKEBASE_CONVERSATION_REPOSITORY
+    description: "Allow the Lakebase conversation repository backend to be selected (Phase 3A/3D — disabled by default)"
+    value: "false"
