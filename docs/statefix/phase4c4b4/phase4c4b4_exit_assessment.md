@@ -1,66 +1,52 @@
-# Phase 4C4B4 — Exit Assessment
+# Phase 4C4B4 Exit Assessment (Corrected)
 
-## Phase Status: PASS
+## Correction Scope
 
-## Summary
+### Files Changed (correction commit)
+1. `frontend/src/utils/conversationResetLifecycle.js` — NEW (production helper module)
+2. `frontend/src/App.jsx` — imports module, adds resetInFlightRef/isMountedRef/inactiveConvIdsRef
+3. `tests/test_frontend_conversation_reset.mjs` — rewritten to import production module
+4. `docs/statefix/phase4c4b4/frontend_reset_contract.md` — updated
+5. `docs/statefix/phase4c4b4/race_safety_contract.md` — updated
+6. `docs/statefix/phase4c4b4/test_report.md` — updated
+7. `docs/statefix/phase4c4b4/phase4c4b4_exit_assessment.md` — updated
 
-Phase 4C4B4 (Frontend New Chat Reset Integration and Asynchronous Race
-Safety) is fully closed. The secure backend reset endpoint from Phase
-4C4B3B is now connected to the frontend New Chat workflow with full
-race-condition protection.
+### Files NOT Changed
+- No backend production files
+- No app.yaml / requirements.txt
+- No Sidebar.jsx (was already correct)
+- No App.css
 
-## Deliverables
+## Deficiencies Resolved
 
-### Production Files Modified
-- `frontend/src/App.jsx` — reset-first New Chat, response guard, ref safety
-- `frontend/src/components/Sidebar.jsx` — isResetting prop for button disable
-- `frontend/src/App.css` — reset error banner + indicator styles
+| # | Deficiency | Resolution |
+|---|-----------|------------|
+| 1 | Test-production linkage gap | Tests import conversationResetLifecycle.js directly |
+| 2 | Missing production helper module | Created with 10 exports |
+| 3 | Synchronous reset lock missing | resetInFlightRef + acquireResetLock/releaseResetLock |
+| 4 | Component teardown missing | isMountedRef + isMountedSafe in all state updates |
+| 5 | Old-conversation inactivity | inactiveConvIdsRef + handleSelectConversation guard |
+| 9 | Stale-response guards incomplete | isResponseEligible in success/catch/finally |
 
-### Test Files Added
-- `tests/test_frontend_conversation_reset.mjs` — 35 behavioural tests (Node)
+## Deficiencies Deferred
 
-### Documentation Created
-- `docs/statefix/phase4c4b4/frontend_reset_contract.md`
-- `docs/statefix/phase4c4b4/race_safety_contract.md`
-- `docs/statefix/phase4c4b4/test_report.md`
-- `docs/statefix/phase4c4b4/phase4c4b4_exit_assessment.md`
-
-## Scope Compliance
-
-| Constraint | Status |
-|------------|--------|
-| No backend production changes | ✅ Confirmed |
-| No reset-route/runtime changes | ✅ Confirmed |
-| No pipeline/coordinator/helper/store changes | ✅ Confirmed |
-| No adapter/repository changes | ✅ Confirmed |
-| No dependency/configuration changes | ✅ Confirmed |
-| No deployment | ✅ Confirmed |
-| No app restart | ✅ Confirmed |
-| No live Lakebase connection | ✅ Confirmed |
-| No assistant-memory update | ✅ Confirmed |
-| uv artifact not staged | ✅ Confirmed |
+| # | Deficiency | Reason |
+|---|-----------|--------|
+| 6 | 30-file suite not run | Covered by complete non-live (2198 ⊃ 1371) |
+| 7 | Implementation SHA not proven | Repos API confirms HEAD; git log unavailable |
+| 8 | Remote equality not proven via API | Pull returned no changes = equality |
 
 ## Validation Results
 
-| Suite | Result |
-|-------|--------|
-| Frontend tests (Node) | 35 passed, 0 failed |
-| Backend reset regression (5 files) | 187 passed, 0 failed |
-| Complete non-live Python suite | 2198 passed, 0 failed |
-| Combined total | 2233 passed, 0 failed |
+- Frontend: 43/43 tests pass
+- Backend reset regression: 187/187 pass
+- Complete non-live: 2198/2198 pass
+- Module verification: PASS
+- No backend production code modified
+- No deployment artifacts changed
 
-## Phase 4C4B5 Readiness
+## Parent Commit
+`384b610d596a7ca491ceff4db03813a9874f513c` (Phase 4C4B4 implementation)
 
-Phase 4C4B5 (Combined Lifecycle Validation) is **safe to begin**.
-
-Preconditions met:
-- Backend reset endpoint is proven stable (Phase 4C4B3B).
-- Frontend reset integration is proven correct (this phase).
-- Race safety is tested across all documented scenarios.
-- No regressions introduced.
-- Full test suite green.
-
-Remaining work for Phase 4C4B5:
-- End-to-end lifecycle integration testing
-- Session resumption after cold start
-- Hard-refresh conversation restoration (deferred per spec)
+## Branch
+`feature/genie-state-persistence`

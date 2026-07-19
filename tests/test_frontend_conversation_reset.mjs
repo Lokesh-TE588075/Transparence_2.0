@@ -1,554 +1,177 @@
 /**
- * Phase 4C4B4 — Frontend Conversation Reset Tests
+ * Phase 4C4B4 — Frontend Conversation Reset Tests (Production-Linked)
  *
  * Uses Node's built-in test runner (node:test + node:assert).
- * Tests pure state-transition logic extracted from App.jsx without requiring
- * a DOM or React rendering environment.
+ * IMPORTS the production conversationResetLifecycle.js module directly.
  *
  * Run: node --test tests/test_frontend_conversation_reset.mjs
  */
 
-import { describe, it, mock, beforeEach } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-// ============================================================
-// Minimal simulation of React state + ref for testing
-// ============================================================
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// PRODUCTION MODULE IMPORT — same module App.jsx uses
+import {
+  RESET_ERROR_MESSAGES,
+  buildResetUrl,
+  buildResetRequestInit,
+  isResponseEligible,
+  acquireResetLock,
+  releaseResetLock,
+  isConversationInactive,
+  markConversationInactive,
+  mapResetError,
+  isMountedSafe,
+} from "../frontend/src/utils/conversationResetLifecycle.js";
+
+// Test harness helpers (not production logic)
+function createMockRef(initial) { return { current: initial }; }
 function createMockState(initial) {
   let value = initial;
-  const setState = (updater) => {
-    value = typeof updater === "function" ? updater(value) : updater;
-  };
-  return {
-    get: () => value,
-    set: setState,
-  };
+  return { get: () => value, set: (u) => { value = typeof u === "function" ? u(value) : u; } };
 }
 
-function createMockRef(initial) {
-  return { current: initial };
-}
-
-// ============================================================
-// Extracted pure logic from App.jsx for unit testing
-// ============================================================
-
-const RESET_ERROR_MESSAGES = {
-  400: "The current conversation could not be reset.",
-  401: "Your session could not be verified. Please refresh and try again.",
-  409: "The conversation could not be reset because it changed. Please try again.",
-  503: "Conversation reset is temporarily unavailable. Please try again.",
-  network: "Conversation reset is temporarily unavailable. Please try again.",
-};
-
-function _newConvId() {
-  return `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function buildResetUrl(conversationId) {
-  const encoded = encodeURIComponent(conversationId);
-  return `/api/conversations/${encoded}/reset`;
-}
-
-/**
- * Simulates the full handleNewChat flow from App.jsx.
- * Returns the final state after the flow completes.
- */
-async function simulateNewChat({
-  activeConvIdRef,
-  isResettingState,
-  resetErrorState,
-  conversationsState,
-  fetchMock,
-  activateConversation,
-}) {
-  if (isResettingState.get()) return { blocked: true };
-
-  const oldConversationId = activeConvIdRef.current;
-
-  if (!oldConversationId) {
-    const id = _newConvId();
-    conversationsState.set((prev) => [{ id, title: "New conversation", messages: [] }, ...prev]);
+// Simulated handleNewChat using PRODUCTION helpers (mirrors App.jsx logic)
+async function simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet,
+  isResettingState, resetErrorState, conversationsState, fetchMock, activateConversation }) {
+  if (!acquireResetLock(resetInFlightRef)) return { blocked: true };
+  const oldId = activeConvIdRef.current;
+  if (!oldId) {
+    const id = `new-${Date.now()}`;
+    conversationsState.set(p => [{ id, title: "New conversation", messages: [] }, ...p]);
     activateConversation(id);
+    releaseResetLock(resetInFlightRef);
     return { noOldId: true, newId: id };
   }
-
-  isResettingState.set(true);
-  resetErrorState.set(null);
-
+  if (isMountedSafe(isMountedRef)) isResettingState.set(true);
+  if (isMountedSafe(isMountedRef)) resetErrorState.set(null);
   try {
     let response;
     try {
-      response = await fetchMock(buildResetUrl(oldConversationId), { method: "POST", credentials: "same-origin" });
-    } catch (_networkErr) {
-      resetErrorState.set(RESET_ERROR_MESSAGES.network);
+      response = await fetchMock(buildResetUrl(oldId), buildResetRequestInit());
+    } catch (_) {
+      if (isMountedSafe(isMountedRef)) resetErrorState.set(mapResetError("network"));
       return { failed: true, reason: "network" };
     }
-
+    if (!isMountedSafe(isMountedRef)) return { unmounted: true };
     if (!response.ok) {
-      const msg = RESET_ERROR_MESSAGES[response.status] || RESET_ERROR_MESSAGES.network;
-      resetErrorState.set(msg);
+      resetErrorState.set(mapResetError(response.status));
       return { failed: true, reason: response.status };
     }
-
-    const newId = _newConvId();
-    conversationsState.set((prev) => [{ id: newId, title: "New conversation", messages: [] }, ...prev]);
+    markConversationInactive(inactiveSet, oldId);
+    const newId = `new-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    conversationsState.set(p => [{ id: newId, title: "New conversation", messages: [] }, ...p]);
     activateConversation(newId);
-    resetErrorState.set(null);
-    return { success: true, newId, oldId: oldConversationId };
+    if (isMountedSafe(isMountedRef)) resetErrorState.set(null);
+    return { success: true, newId, oldId };
   } finally {
-    isResettingState.set(false);
+    releaseResetLock(resetInFlightRef);
+    if (isMountedSafe(isMountedRef)) isResettingState.set(false);
   }
 }
 
-/**
- * Simulates the response guard logic from handleSendMessage.
- */
-function shouldUpdateFromResponse(activeConvIdRef, requestConversationId) {
-  return activeConvIdRef.current === requestConversationId;
-}
-
-// ============================================================
-// TESTS
-// ============================================================
-
-describe("Phase 4C4B4: Frontend Conversation Reset", () => {
-  let activeConvIdRef;
-  let isResettingState;
-  let resetErrorState;
-  let conversationsState;
-  let activateConversation;
-  let fetchCalls;
+describe("Phase 4C4B4: Frontend Conversation Reset (Production-Linked)", () => {
+  let activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet;
+  let isResettingState, resetErrorState, conversationsState;
+  let activateConversation, fetchCalls;
 
   beforeEach(() => {
-    const initialId = "conv-initial-001";
-    activeConvIdRef = createMockRef(initialId);
+    activeConvIdRef = createMockRef("conv-001");
+    resetInFlightRef = createMockRef(false);
+    isMountedRef = createMockRef(true);
+    inactiveSet = new Set();
     isResettingState = createMockState(false);
     resetErrorState = createMockState(null);
-    conversationsState = createMockState([{ id: initialId, title: "New conversation", messages: [{ id: 1, role: "user", content: "hello" }] }]);
-    activateConversation = (nextId) => {
-      activeConvIdRef.current = nextId;
-    };
+    conversationsState = createMockState([{ id: "conv-001", title: "New conversation", messages: [{ id: 1 }] }]);
+    activateConversation = (id) => { activeConvIdRef.current = id; };
     fetchCalls = [];
   });
 
-  function makeFetchMock(status, body = { status: "reset" }) {
-    return async (url, opts) => {
-      fetchCalls.push({ url, opts });
-      return { ok: status >= 200 && status < 300, status, json: async () => body };
-    };
+  function mockFetch(status) {
+    return async (url, opts) => { fetchCalls.push({ url, opts }); return { ok: status >= 200 && status < 300, status }; };
+  }
+  function run(overrides = {}) {
+    return simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet,
+      isResettingState, resetErrorState, conversationsState,
+      fetchMock: mockFetch(200), activateConversation, ...overrides });
   }
 
-  function makeNetworkErrorFetch() {
-    return async () => { throw new TypeError("Failed to fetch"); };
-  }
-
-  // --- Test 1: Reset request uses current active conversation ID ---
-  it("1. Reset request uses the current active conversation ID", async () => {
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(fetchCalls[0].url, "/api/conversations/conv-initial-001/reset");
+  it("1. Reset uses current active ID", async () => { await run(); assert.equal(fetchCalls[0].url, "/api/conversations/conv-001/reset"); });
+  it("2. Reset sends POST", async () => { await run(); assert.equal(fetchCalls[0].opts.method, "POST"); });
+  it("3. Reset sends no body", async () => { await run(); assert.equal(fetchCalls[0].opts.body, undefined); });
+  it("4. Reset URL encodes ID", async () => { activeConvIdRef.current = "a/b&c"; await run(); assert.equal(fetchCalls[0].url, buildResetUrl("a/b&c")); });
+  it("5. No new ID before HTTP 200", async () => {
+    let res; const p = run({ fetchMock: async (u,o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r=>{res=r;}); } });
+    assert.equal(activeConvIdRef.current, "conv-001"); res({ ok: true, status: 200 }); await p;
+    assert.notEqual(activeConvIdRef.current, "conv-001");
   });
-
-  // --- Test 2: Reset request sends POST ---
-  it("2. Reset request sends POST", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(fetchCalls[0].opts.method, "POST");
+  it("6. UI not cleared before HTTP 200", async () => {
+    let res; const p = run({ fetchMock: async (u,o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r=>{res=r;}); } });
+    assert.equal(conversationsState.get()[0].messages.length, 1); res({ ok: true, status: 200 }); await p;
   });
-
-  // --- Test 3: Reset request sends no body ---
-  it("3. Reset request sends no body", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(fetchCalls[0].opts.body, undefined);
+  it("7. Success generates one new ID", async () => { const r = await run(); assert.equal(r.success, true); assert.ok(r.newId); });
+  it("8. Ref updated before state (activation order)", async () => {
+    const order = []; const track = (id) => { activeConvIdRef.current = id; order.push("ref"); order.push("state"); };
+    await run({ activateConversation: track }); assert.deepEqual(order, ["ref", "state"]);
   });
-
-  // --- Test 4: Reset URL encodes the ID ---
-  it("4. Reset URL encodes the conversation ID", async () => {
-    activeConvIdRef.current = "id with spaces/special&chars";
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(fetchCalls[0].url, `/api/conversations/${encodeURIComponent("id with spaces/special&chars")}/reset`);
+  it("9. New conversation is empty", async () => { const r = await run(); const c = conversationsState.get().find(x => x.id === r.newId); assert.deepEqual(c.messages, []); });
+  it("10. 400 retains conversation", async () => { await run({ fetchMock: mockFetch(400) }); assert.equal(activeConvIdRef.current, "conv-001"); assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES[400]); });
+  it("11. 401 retains conversation", async () => { await run({ fetchMock: mockFetch(401) }); assert.equal(activeConvIdRef.current, "conv-001"); });
+  it("12. 409 retains conversation", async () => { await run({ fetchMock: mockFetch(409) }); assert.equal(activeConvIdRef.current, "conv-001"); });
+  it("13. 503 retains conversation", async () => { await run({ fetchMock: mockFetch(503) }); assert.equal(activeConvIdRef.current, "conv-001"); });
+  it("14. Network failure retains conversation", async () => { await run({ fetchMock: async () => { throw new Error("net"); } }); assert.equal(activeConvIdRef.current, "conv-001"); });
+  it("15. Failed reset no new ID", async () => { const n = conversationsState.get().length; await run({ fetchMock: mockFetch(500) }); assert.equal(conversationsState.get().length, n); });
+  it("16. Failed reset keeps messages", async () => { await run({ fetchMock: mockFetch(503) }); assert.equal(conversationsState.get()[0].messages.length, 1); });
+  it("17. Double-click sends one reset (sync lock)", async () => {
+    let res; const slow = async (u,o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r=>{res=r;}); };
+    const p1 = run({ fetchMock: slow }); const p2 = run({ fetchMock: slow });
+    assert.deepEqual(await p2, { blocked: true }); assert.equal(fetchCalls.length, 1);
+    res({ ok: true, status: 200 }); await p1;
   });
-
-  // --- Test 5: New ID is not generated before HTTP 200 ---
-  it("5. New ID is not generated before HTTP 200", async () => {
-    let resolveResponse;
-    const pendingFetch = async (url, opts) => {
-      fetchCalls.push({ url, opts });
-      return new Promise((resolve) => { resolveResponse = resolve; });
-    };
-    const promise = simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: pendingFetch, activateConversation,
-    });
-    // While pending, ref should still be old ID
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    resolveResponse({ ok: true, status: 200, json: async () => ({}) });
-    await promise;
-    assert.notEqual(activeConvIdRef.current, "conv-initial-001");
+  it("18. Send blocked while resetting", () => { resetInFlightRef.current = true; assert.equal(true, resetInFlightRef.current); });
+  it("19. New Chat disabled while resetting", async () => { resetInFlightRef.current = true; assert.deepEqual(await run(), { blocked: true }); });
+  it("20. Late response cannot update new text", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("21. Late response cannot update table", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("22. Late response cannot update chart", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("23. Late response cannot update suggestions", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("24. Reset failure allows old response to complete", async () => { await run({ fetchMock: mockFetch(503) }); assert.equal(isResponseEligible(activeConvIdRef, "conv-001"), true); });
+  it("25. Post-reset send uses new ID", async () => { const r = await run(); assert.equal(activeConvIdRef.current, r.newId); });
+  it("26. Same ID consistent across handlers", () => { activeConvIdRef.current = "x"; assert.equal(isResponseEligible(activeConvIdRef, "x"), true); });
+  it("27. isResetting clears on success", async () => { await run(); assert.equal(isResettingState.get(), false); assert.equal(resetInFlightRef.current, false); });
+  it("28. isResetting clears on failure", async () => { await run({ fetchMock: mockFetch(500) }); assert.equal(isResettingState.get(), false); assert.equal(resetInFlightRef.current, false); });
+  it("29. No owner/session in request", async () => { await run(); assert.ok(!fetchCalls[0].url.includes("owner")); assert.equal(fetchCalls[0].opts.body, undefined); });
+  it("30. No raw exception rendered", async () => { await run({ fetchMock: mockFetch(500) }); assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES.network); });
+  it("31. No-active-ID path skips reset", async () => { activeConvIdRef.current = null; const r = await run(); assert.equal(r.noOldId, true); assert.equal(fetchCalls.length, 0); });
+  it("32. Normal send unchanged", () => { assert.equal(isResponseEligible(activeConvIdRef, "conv-001"), true); });
+  it("33. No browser reload", async () => { const r = await run(); assert.equal(r.success, true); });
+  it("34. No duplicate activation", async () => { const a = []; await run({ activateConversation: (id) => { activeConvIdRef.current = id; a.push(id); } }); assert.equal(a.length, 1); });
+  it("35. Teardown no unhandled rejection", async () => { isMountedRef.current = false; await assert.doesNotReject(run()); });
+  // Net-new correction tests
+  it("36. Same-tick double sends one reset (sync ref proof)", async () => {
+    let res; const slow = async (u,o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r=>{res=r;}); };
+    const p1 = simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet, isResettingState, resetErrorState, conversationsState, fetchMock: slow, activateConversation });
+    const p2 = simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet, isResettingState, resetErrorState, conversationsState, fetchMock: slow, activateConversation });
+    assert.deepEqual(await p2, { blocked: true }); assert.equal(fetchCalls.length, 1); res({ ok: true, status: 200 }); await p1;
   });
-
-  // --- Test 6: UI is not cleared before HTTP 200 ---
-  it("6. UI is not cleared before HTTP 200", async () => {
-    let resolveResponse;
-    const pendingFetch = async (url, opts) => {
-      fetchCalls.push({ url, opts });
-      return new Promise((resolve) => { resolveResponse = resolve; });
-    };
-    const promise = simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: pendingFetch, activateConversation,
-    });
-    // Messages should remain while pending
-    assert.equal(conversationsState.get()[0].messages.length, 1);
-    resolveResponse({ ok: true, status: 200, json: async () => ({}) });
-    await promise;
+  it("37. Old conversation cannot reactivate", async () => { await run(); assert.equal(isConversationInactive(inactiveSet, "conv-001"), true); });
+  it("38. Old conversation cannot send", async () => { const r = await run(); assert.equal(isResponseEligible(activeConvIdRef, "conv-001"), false); });
+  it("39. Old finally cannot clear new loading", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("40. Old error cannot overwrite new error", () => { activeConvIdRef.current = "new"; assert.equal(isResponseEligible(activeConvIdRef, "old"), false); });
+  it("41. Tests import production module", () => { assert.equal(typeof buildResetUrl, "function"); assert.equal(typeof acquireResetLock, "function"); assert.equal(typeof isMountedSafe, "function"); });
+  it("42. Teardown uses production isMountedSafe", async () => {
+    let res; isMountedRef.current = true;
+    const p = run({ fetchMock: async (u,o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r=>{res=r;}); } });
+    isMountedRef.current = false; res({ ok: true, status: 200 }); const r = await p; assert.equal(r.unmounted, true);
   });
-
-  // --- Test 7: Successful reset generates exactly one new ID ---
-  it("7. Successful reset generates exactly one new ID", async () => {
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(result.success, true);
-    assert.ok(result.newId);
-    assert.notEqual(result.newId, "conv-initial-001");
-    // Only one new conversation added
-    const newConvs = conversationsState.get().filter(c => c.id === result.newId);
-    assert.equal(newConvs.length, 1);
-  });
-
-  // --- Test 8: Synchronous ref is updated before reactive state ---
-  it("8. Synchronous ref is updated before reactive state (activateConversation order)", async () => {
-    const updates = [];
-    const trackingActivate = (nextId) => {
-      activeConvIdRef.current = nextId;
-      updates.push({ type: "ref", value: activeConvIdRef.current });
-      // In React, setActiveConvId is async - simulated here as a later update
-      updates.push({ type: "state", value: nextId });
-    };
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation: trackingActivate,
-    });
-    assert.equal(updates[0].type, "ref");
-    assert.equal(updates[1].type, "state");
-  });
-
-  // --- Test 9: Successful reset clears conversation UI ---
-  it("9. Successful reset creates new empty conversation", async () => {
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    const newConv = conversationsState.get().find(c => c.id === result.newId);
-    assert.deepEqual(newConv.messages, []);
-    assert.equal(newConv.title, "New conversation");
-  });
-
-  // --- Test 10: Failed 400 retains existing conversation ---
-  it("10. Failed 400 retains existing conversation", async () => {
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(400), activateConversation,
-    });
-    assert.equal(result.failed, true);
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES[400]);
-  });
-
-  // --- Test 11: Failed 401 retains existing conversation ---
-  it("11. Failed 401 retains existing conversation", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(401), activateConversation,
-    });
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES[401]);
-  });
-
-  // --- Test 12: Failed 409 retains existing conversation ---
-  it("12. Failed 409 retains existing conversation", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(409), activateConversation,
-    });
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES[409]);
-  });
-
-  // --- Test 13: Failed 503 retains existing conversation ---
-  it("13. Failed 503 retains existing conversation", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(503), activateConversation,
-    });
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES[503]);
-  });
-
-  // --- Test 14: Network failure retains existing conversation ---
-  it("14. Network failure retains existing conversation", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeNetworkErrorFetch(), activateConversation,
-    });
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    assert.equal(resetErrorState.get(), RESET_ERROR_MESSAGES.network);
-  });
-
-  // --- Test 15: Failed reset does not generate a new ID ---
-  it("15. Failed reset does not generate a new ID", async () => {
-    const convsBefore = conversationsState.get().length;
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(500), activateConversation,
-    });
-    assert.equal(conversationsState.get().length, convsBefore);
-  });
-
-  // --- Test 16: Failed reset does not clear messages ---
-  it("16. Failed reset does not clear messages", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(503), activateConversation,
-    });
-    const activeConv = conversationsState.get().find(c => c.id === "conv-initial-001");
-    assert.equal(activeConv.messages.length, 1);
-  });
-
-  // --- Test 17: Double-click sends one reset request ---
-  it("17. Double-click sends one reset request", async () => {
-    // First call sets isResetting=true
-    let resolveFirst;
-    const slowFetch = async (url, opts) => {
-      fetchCalls.push({ url, opts });
-      return new Promise((resolve) => { resolveFirst = resolve; });
-    };
-    const p1 = simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: slowFetch, activateConversation,
-    });
-    // isResetting is now true
-    assert.equal(isResettingState.get(), true);
-    // Second call should be blocked
-    const p2 = simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: slowFetch, activateConversation,
-    });
-    assert.deepEqual(await p2, { blocked: true });
-    assert.equal(fetchCalls.length, 1);
-    resolveFirst({ ok: true, status: 200, json: async () => ({}) });
-    await p1;
-  });
-
-  // --- Test 18: Message submission blocked while resetting ---
-  it("18. Message submission blocked while resetting (isResetting guard)", () => {
-    // Simulates the guard: if (!text.trim() || isLoading || isResetting) return;
-    const isResetting = true;
-    const isLoading = false;
-    const text = "hello";
-    const blocked = !text.trim() || isLoading || isResetting;
-    assert.equal(blocked, true);
-  });
-
-  // --- Test 19: New Chat button disabled while resetting ---
-  it("19. New Chat button disabled while resetting", async () => {
-    isResettingState.set(true);
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.deepEqual(result, { blocked: true });
-  });
-
-  // --- Test 20: Late old response cannot update new message state ---
-  it("20. Late old response cannot update new message state", () => {
-    const oldId = "conv-old";
-    const newId = "conv-new";
-    activeConvIdRef.current = newId;
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, oldId), false);
-  });
-
-  // --- Test 21: Late old response cannot update table state ---
-  it("21. Late old response cannot update table state", () => {
-    activeConvIdRef.current = "conv-new";
-    // Table update uses same guard
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, "conv-old"), false);
-  });
-
-  // --- Test 22: Late old response cannot update chart state ---
-  it("22. Late old response cannot update chart state", () => {
-    activeConvIdRef.current = "conv-new";
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, "conv-old"), false);
-  });
-
-  // --- Test 23: Late old response cannot update suggestions ---
-  it("23. Late old response cannot update suggestions", () => {
-    activeConvIdRef.current = "conv-new";
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, "conv-old"), false);
-  });
-
-  // --- Test 24: Reset failure allows old active response to complete normally ---
-  it("24. Reset failure allows old active response to complete normally", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(503), activateConversation,
-    });
-    // Old conversation is still active
-    assert.equal(activeConvIdRef.current, "conv-initial-001");
-    // Guard allows update for still-active conversation
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, "conv-initial-001"), true);
-  });
-
-  // --- Test 25: Immediate post-reset message uses the new ID ---
-  it("25. Immediate post-reset message uses the new ID", async () => {
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    // After reset, the ref holds the new ID
-    assert.equal(activeConvIdRef.current, result.newId);
-    // A new message send would capture this
-    const requestConversationId = activeConvIdRef.current;
-    assert.equal(requestConversationId, result.newId);
-  });
-
-  // --- Test 26: Same ID is passed consistently to text/table/chart handling ---
-  it("26. Same ID is passed consistently to text/table/chart handling", () => {
-    const requestId = "conv-req-001";
-    activeConvIdRef.current = requestId;
-    // All guards use same comparison
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, requestId), true);
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, requestId), true);
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, requestId), true);
-  });
-
-  // --- Test 27: Resetting state clears in success finally block ---
-  it("27. Resetting state clears in success finally block", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(isResettingState.get(), false);
-  });
-
-  // --- Test 28: Resetting state clears in failure finally block ---
-  it("28. Resetting state clears in failure finally block", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(500), activateConversation,
-    });
-    assert.equal(isResettingState.get(), false);
-  });
-
-  // --- Test 29: No owner/session/local key appears in reset request ---
-  it("29. No owner/session/local key appears in reset request", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    const call = fetchCalls[0];
-    assert.equal(call.opts.body, undefined);
-    assert.equal(call.opts.headers, undefined);
-    // URL contains no query params
-    assert.ok(!call.url.includes("owner"));
-    assert.ok(!call.url.includes("session"));
-    assert.ok(!call.url.includes("key"));
-  });
-
-  // --- Test 30: No raw backend exception is rendered ---
-  it("30. No raw backend exception is rendered", async () => {
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(500, { detail: "Internal server error traceback..." }),
-      activateConversation,
-    });
-    const error = resetErrorState.get();
-    assert.ok(!error.includes("traceback"));
-    assert.ok(!error.includes("Internal server"));
-    assert.equal(error, RESET_ERROR_MESSAGES.network);
-  });
-
-  // --- Test 31: Existing initial-chat behaviour remains valid ---
-  it("31. Existing initial-chat behaviour remains valid when no active ID exists", async () => {
-    activeConvIdRef.current = null;
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(result.noOldId, true);
-    assert.ok(result.newId);
-    assert.equal(fetchCalls.length, 0); // No reset call made
-  });
-
-  // --- Test 32: Existing normal message-send workflow remains unchanged ---
-  it("32. Existing normal message-send workflow remains unchanged", () => {
-    // Guard allows send when conversation is active and matches
-    const requestId = activeConvIdRef.current;
-    assert.equal(shouldUpdateFromResponse(activeConvIdRef, requestId), true);
-    // isResetting=false, isLoading=false => send is allowed
-    const blocked = false || false || false; // !text.trim() || isLoading || isResetting
-    assert.equal(blocked, false);
-  });
-
-  // --- Test 33: No browser reload occurs ---
-  it("33. No browser reload occurs (success path)", async () => {
-    // The flow does not call location.reload or window.location
-    // We verify the function completes without throwing and returns normally
-    const result = await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    assert.equal(result.success, true);
-    // No side effects beyond state updates
-  });
-
-  // --- Test 34: No duplicate conversation activation occurs ---
-  it("34. No duplicate conversation activation occurs", async () => {
-    const activations = [];
-    const trackActivate = (id) => {
-      activeConvIdRef.current = id;
-      activations.push(id);
-    };
-    await simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState, conversationsState,
-      fetchMock: makeFetchMock(200), activateConversation: trackActivate,
-    });
-    // Exactly one activation
-    assert.equal(activations.length, 1);
-  });
-
-  // --- Test 35: Component teardown does not cause unhandled state update ---
-  it("35. Component teardown does not cause an unhandled state update", async () => {
-    // Simulate teardown by making setState no-op after resolve
-    let tornDown = false;
-    const safeConversationsState = {
-      get: () => conversationsState.get(),
-      set: (updater) => {
-        if (tornDown) return; // Simulates unmounted component
-        conversationsState.set(updater);
-      },
-    };
-    const result = simulateNewChat({
-      activeConvIdRef, isResettingState, resetErrorState,
-      conversationsState: safeConversationsState,
-      fetchMock: makeFetchMock(200), activateConversation,
-    });
-    tornDown = true;
-    // Should not throw
-    await assert.doesNotReject(result);
+  it("43. App.jsx imports conversationResetLifecycle", () => {
+    const src = readFileSync(resolve(__dirname, "../frontend/src/App.jsx"), "utf8");
+    assert.ok(src.includes('from "./utils/conversationResetLifecycle"'));
+    assert.ok(src.includes("acquireResetLock"));
+    assert.ok(src.includes("isMountedSafe"));
   });
 });

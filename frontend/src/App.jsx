@@ -4,11 +4,20 @@ import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
 import HelpModal from "./components/HelpModal";
 import FeedbackModal from "./components/FeedbackModal";
+import {
+  RESET_ERROR_MESSAGES,
+  buildResetUrl,
+  buildResetRequestInit,
+  isResponseEligible,
+  acquireResetLock,
+  releaseResetLock,
+  isConversationInactive,
+  markConversationInactive,
+  mapResetError,
+  isMountedSafe,
+} from "./utils/conversationResetLifecycle";
 
 // Generate a unique conversation ID.
-// crypto.randomUUID() is available in all modern browsers (Chrome 92+, Firefox 95+,
-// Safari 15.4+) and avoids the collision risk of hardcoded "1" or timestamp IDs.
-// Fallback: timestamp + random suffix for older environments.
 function _newConvId() {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -16,23 +25,11 @@ function _newConvId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-// Sanitized error messages for reset failures (Step 7).
-const RESET_ERROR_MESSAGES = {
-  400: "The current conversation could not be reset.",
-  401: "Your session could not be verified. Please refresh and try again.",
-  409: "The conversation could not be reset because it changed. Please try again.",
-  503: "Conversation reset is temporarily unavailable. Please try again.",
-  network: "Conversation reset is temporarily unavailable. Please try again.",
-};
-
-// Call the backend reset endpoint (Step 6).
+// Call the backend reset endpoint using production helpers.
 async function resetConversation(frontendConversationId) {
-  const encoded = encodeURIComponent(frontendConversationId);
-  const response = await fetch(`/api/conversations/${encoded}/reset`, {
-    method: "POST",
-    credentials: "same-origin",
-  });
-  return response;
+  const url = buildResetUrl(frontendConversationId);
+  const init = buildResetRequestInit();
+  return fetch(url, init);
 }
 
 export default function App() {
@@ -57,11 +54,18 @@ export default function App() {
     setActiveConvId(nextId);
   }, []);
 
+  // Step 5: Guard sidebar selection — inactive conversations are read-only.
+  const handleSelectConversation = useCallback((id) => {
+    if (isConversationInactive(inactiveConvIdsRef.current, id)) return;
+    activateConversation(id);
+  }, [activateConversation]);
+
   const activeConv = conversations.find(c => c.id === activeConvId) || conversations[0];
 
-  // Step 5: Reset-first New Chat flow.
+  // Step 5: Reset-first New Chat flow with synchronous lock (Step 4).
   const handleNewChat = useCallback(async () => {
-    if (isResetting) return;
+    // Step 4: Synchronous lock — prevents same-tick double invocation.
+    if (!acquireResetLock(resetInFlightRef)) return;
 
     const oldConversationId = activeConvIdRef.current;
 
@@ -71,27 +75,31 @@ export default function App() {
       const newConv = { id, title: "New conversation", messages: [] };
       setConversations(prev => [newConv, ...prev]);
       activateConversation(id);
+      releaseResetLock(resetInFlightRef);
       return;
     }
 
-    setIsResetting(true);
-    setResetError(null);
+    if (isMountedSafe(isMountedRef)) setIsResetting(true);
+    if (isMountedSafe(isMountedRef)) setResetError(null);
 
     try {
       let response;
       try {
         response = await resetConversation(oldConversationId);
       } catch (_networkErr) {
-        // Network failure — retain existing conversation.
-        setResetError(RESET_ERROR_MESSAGES.network);
+        if (isMountedSafe(isMountedRef)) setResetError(mapResetError("network"));
         return;
       }
 
+      if (!isMountedSafe(isMountedRef)) return;
+
       if (!response.ok) {
-        const msg = RESET_ERROR_MESSAGES[response.status] || RESET_ERROR_MESSAGES.network;
-        setResetError(msg);
+        setResetError(mapResetError(response.status));
         return;
       }
+
+      // Step 5/10: Mark old conversation inactive.
+      markConversationInactive(inactiveConvIdsRef.current, oldConversationId);
 
       // Success: generate new ID, activate, clear conversation UI (Step 8).
       const newId = _newConvId();
@@ -100,9 +108,10 @@ export default function App() {
       activateConversation(newId);
       setResetError(null);
     } finally {
-      setIsResetting(false);
+      releaseResetLock(resetInFlightRef);
+      if (isMountedSafe(isMountedRef)) setIsResetting(false);
     }
-  }, [isResetting, activateConversation]);
+  }, [activateConversation]);
 
   const handleDeleteConversation = (id) => {
     setConversations(prev => {
@@ -119,7 +128,7 @@ export default function App() {
 
   // Step 9D: Block message submission while resetting.
   const handleSendMessage = async (text) => {
-    if (!text.trim() || isLoading || isResetting) return;
+    if (!text.trim() || isLoading || resetInFlightRef.current) return;
 
     // Step 3: Capture active conversation ID at request time.
     const requestConversationId = activeConvIdRef.current;
@@ -141,7 +150,7 @@ export default function App() {
       const data = await res.json();
 
       // Step 3 + Step 9: Guard — only update if this conversation is still active.
-      if (activeConvIdRef.current !== requestConversationId) {
+      if (!isResponseEligible(activeConvIdRef, requestConversationId)) {
         // Late response from old conversation — discard silently.
         return;
       }
@@ -185,16 +194,15 @@ export default function App() {
         return updated;
       }));
     } catch (err) {
-      // Step 9B: Guard on error path too.
-      if (activeConvIdRef.current !== requestConversationId) return;
-
+      // Step 9B: Guard on error path — stale error must not overwrite new conversation.
+      if (!isResponseEligible(activeConvIdRef, requestConversationId)) return;
       const errMsg = { id: Date.now() + 1, role: "assistant", content: "I'm having trouble connecting. Please try again in a moment.", status: "error", timestamp: new Date() };
       setConversations(prev => prev.map(c =>
         c.id === requestConversationId ? { ...c, messages: [...c.messages, errMsg] } : c
       ));
     } finally {
-      // Step 9: Only clear loading if this conversation is still active.
-      if (activeConvIdRef.current === requestConversationId) {
+      // Step 6/9: Only clear loading if still active and mounted.
+      if (isResponseEligible(activeConvIdRef, requestConversationId) && isMountedSafe(isMountedRef)) {
         setIsLoading(false);
       }
     }
@@ -226,7 +234,7 @@ export default function App() {
         <Sidebar
           conversations={conversations}
           activeId={activeConvId}
-          onSelect={setActiveConvId}
+          onSelect={handleSelectConversation}
           onNew={handleNewChat}
           onDelete={handleDeleteConversation}
           isOpen={sidebarOpen}
