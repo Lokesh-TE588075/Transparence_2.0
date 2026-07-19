@@ -151,6 +151,10 @@ _OWNER_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 _MSG_INVALID_OWNER_KEY = (
     "Internal error: request identity contract violation."
 )
+_MSG_DURABLE_LOOKUP_UNAVAILABLE = (
+    "I wasn't able to complete that request. "
+    "Please try again in a moment."
+)
 
 
 class _OwnerKeyContractError(Exception):
@@ -162,6 +166,16 @@ class _OwnerKeyContractError(Exception):
 
     When this error is raised, the pipeline MUST NOT fall back to the
     custom pipeline because the trusted identity contract is broken.
+    """
+
+
+class _DurableLookupUnavailableError(Exception):
+    """Internal-only exception for durable lookup failures.
+
+    Raised when the durable Genie session lookup encounters a repository
+    unavailability or returns an unconfirmed degraded read.  Processing
+    MUST NOT proceed without confirmed durable state when durable mode
+    is enabled.  Fallback to custom pipeline is prohibited.
     """
 
 
@@ -287,6 +301,7 @@ class GeniePipeline:
         execution_time_ms: Optional[int] = None,
         *,
         owner_key: Optional[str] = None,
+        frontend_conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute one turn of the Genie conversation.
 
@@ -307,9 +322,14 @@ class GeniePipeline:
             owner_key:              Optional trusted owner identity hash
                                     (Phase 4C1).  When supplied, must be a
                                     64-character lowercase hexadecimal string.
-                                    Validated structurally but not used in this
-                                    phase.  Reserved for Phase 4C2 durable-state
-                                    integration.
+                                    Validated structurally; used in Phase 4C2A
+                                    for durable session lookup.
+            frontend_conversation_id:  Optional raw frontend conversation ID
+                                    (Phase 4C2A).  This is the browser-supplied
+                                    conversation identifier used together with
+                                    owner_key to build the durable ownership
+                                    key.  Must not be parsed from
+                                    app_conversation_id.
 
         Returns:
             ChatResponse-compatible dict.  Successful turns include
@@ -322,10 +342,20 @@ class GeniePipeline:
             # Phase 4C1: Structural validation of trusted owner key.
             # The key is request-local only; it is NOT stored on the pipeline
             # instance, NOT logged, NOT passed to Genie, NOT included in
-            # session state, and NOT used for any durable operation in this
-            # phase.  Validation precedes any Genie interaction.
+            # session state, and NOT exposed in any response.
             if owner_key is not None:
                 _validate_owner_key(owner_key)
+
+            # Phase 4C2A: Read-only durable Genie session lookup.
+            # When the durable runtime bundle is enabled and both owner_key
+            # and frontend_conversation_id are present, perform exactly one
+            # read-only lookup to recover an existing Genie conversation
+            # mapping from the durable repository.
+            self._durable_session_lookup(
+                owner_key=owner_key,
+                frontend_conversation_id=frontend_conversation_id,
+                app_conversation_id=app_conversation_id,
+            )
 
             return self._run_inner(
                 user_message, app_conversation_id, start_time, execution_time_ms
@@ -372,6 +402,13 @@ class GeniePipeline:
             # pipeline.  The trusted identity contract is broken; processing
             # without the owner key is prohibited.  No details are logged.
             return self._build_owner_key_error_response(
+                app_conversation_id, start_time, execution_time_ms,
+            )
+
+        except _DurableLookupUnavailableError:
+            # Durable lookup unavailable: MUST NOT fall back to custom
+            # pipeline and MUST NOT start a new Genie conversation.
+            return self._build_durable_lookup_error_response(
                 app_conversation_id, start_time, execution_time_ms,
             )
 
@@ -1210,6 +1247,151 @@ class GeniePipeline:
         return {
             "status":            "error",
             "message":           _MSG_INVALID_OWNER_KEY,
+            "is_table":          False,
+            "table_data":        None,
+            "row_count":         0,
+            "preview_row_count": 0,
+            "returned_row_count": 0,
+            "total_row_count": None,
+            "export_row_count": None,
+            "display_row_limit": self._table_display_row_limit,
+            "download_key":      None,
+            "export_id":         None,
+            "export_status":     None,
+            "export_mode":       None,
+            "execution_time_ms": elapsed_ms,
+            "conversation_id":   app_conversation_id,
+            "clarification":     None,
+            "source":                  "genie",
+            "genie_conversation_id":   None,
+            "genie_message_id":        None,
+            "generated_sql":           None,
+            "suggested_questions":     [],
+            "has_visualization":       False,
+            "visualization":           None,
+            "attachment_types":        [],
+            "debug_info":              None,
+            "fallback_recommended":    False,
+        }
+
+    # -------------------------------------------------------------------------
+    # PHASE 4C2A: DURABLE SESSION LOOKUP (read-only)
+    # -------------------------------------------------------------------------
+
+    def _durable_session_lookup(
+        self,
+        *,
+        owner_key: Optional[str],
+        frontend_conversation_id: Optional[str],
+        app_conversation_id: str,
+    ) -> None:
+        """Perform a read-only durable Genie session lookup.
+
+        When the durable runtime bundle is disabled, this is a no-op.
+        When enabled, it requires both owner_key and frontend_conversation_id.
+        On a successful hit, restores the Genie conversation mapping into the
+        in-memory GenieSessionStore so that _run_inner() uses send_message
+        instead of start_conversation.
+
+        No durable record is created, bound, updated or deleted.
+        """
+        # --- Gate 1: Is durable mode enabled? ---
+        bundle = getattr(self, "_durable_session_runtime_bundle", None)
+        if bundle is None or not getattr(bundle, "enabled", False):
+            return  # Disabled path: no access to adapter or repository.
+
+        # --- Gate 2: Prerequisites ---
+        if owner_key is None:
+            raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
+        if not frontend_conversation_id:
+            raise _DurableLookupUnavailableError(
+                "frontend_conversation_id is required for durable lookup."
+            )
+
+        # --- Gate 3: Access adapter ---
+        adapter = getattr(bundle, "adapter", None)
+        if adapter is None:
+            raise _DurableLookupUnavailableError(
+                "Durable adapter is unavailable."
+            )
+
+        # --- Gate 4: Build durable key ---
+        from app.services.durable_genie_session_adapter import (
+            DurableGenieSessionKey,
+            DurableGenieSessionUnavailableError,
+        )
+        from app.services.conversation_repository import ConversationStatus
+
+        try:
+            durable_key = DurableGenieSessionKey(
+                owner_user_id_hash=owner_key,
+                frontend_conversation_id=frontend_conversation_id,
+            )
+        except (ValueError, TypeError):
+            raise _DurableLookupUnavailableError(
+                "Invalid durable key components."
+            )
+
+        # --- Gate 5: Perform exactly one read-only lookup ---
+        try:
+            result = adapter.load(durable_key)
+        except DurableGenieSessionUnavailableError:
+            raise _DurableLookupUnavailableError(
+                "Durable session repository is unavailable."
+            )
+        except Exception:
+            raise _DurableLookupUnavailableError(
+                "Durable session lookup failed."
+            )
+
+        # --- Outcome A: No record found → new-conversation flow ---
+        if result is None:
+            return
+
+        # --- Outcome A.1: Reject unconfirmed degraded reads ---
+        if getattr(result, "degraded", False):
+            raise _DurableLookupUnavailableError(
+                "Durable session lookup returned an unconfirmed degraded read."
+            )
+
+        # --- Outcome A.2: Only recover ACTIVE records ---
+        record = result.record
+        if record.status != ConversationStatus.ACTIVE:
+            return  # Non-active: treat as "not found", new-conversation flow.
+
+        # --- Outcome B: Active record with Genie conversation ID ---
+        genie_conversation_id = record.genie_conversation_id
+        if not genie_conversation_id:
+            return  # Bound but no Genie conversation yet: new-conversation flow.
+
+        # --- Restore in-memory session mapping ---
+        self._store.set_genie_conversation_id(
+            app_conversation_id, genie_conversation_id
+        )
+        if record.last_genie_message_id:
+            self._store.set_last_message_id(
+                app_conversation_id, record.last_genie_message_id
+            )
+
+    def _build_durable_lookup_error_response(
+        self,
+        app_conversation_id: str,
+        start_time: float,
+        execution_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        """Build error response for durable lookup failures.
+
+        Sets fallback_recommended=False: processing MUST NOT proceed
+        through any pipeline when durable state is unavailable.
+        """
+        elapsed_ms = (
+            execution_time_ms
+            if execution_time_ms is not None
+            else int((time.monotonic() - start_time) * 1000)
+        )
+        return {
+            "status":            "error",
+            "message":           _MSG_DURABLE_LOOKUP_UNAVAILABLE,
             "is_table":          False,
             "table_data":        None,
             "row_count":         0,

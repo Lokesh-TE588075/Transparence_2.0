@@ -438,9 +438,10 @@ def test_no_separate_global_repository_exists() -> None:
 
 
 def test_request_path_modules_do_not_access_private_bundle() -> None:
+    # Phase 4C2A: genie_pipeline.py now legitimately accesses
+    # _durable_session_runtime_bundle for read-only durable lookup.
     for path in [
         "app/routes/chat.py",
-        "app/services/genie_pipeline.py",
         "app/main.py",
         "app/services/genie_session_store.py",
     ]:

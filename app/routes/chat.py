@@ -281,6 +281,7 @@ async def chat(request: Request, body: ChatRequest):
                     user_message=user_message,
                     app_conversation_id=server_conversation_key,
                     owner_key=_owner_key,
+                    frontend_conversation_id=frontend_conversation_id,
                 )
 
                 if not genie_result.get("fallback_recommended", False):
