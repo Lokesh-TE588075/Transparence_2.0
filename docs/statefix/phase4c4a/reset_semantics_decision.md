@@ -209,7 +209,7 @@ idempotent 200 (RESET, STALE, EXPIRED, or missing record).
 | RESET | None (already non-active) | No | 200 idempotent |
 | STALE | None (already non-active) | No | 200 idempotent |
 | EXPIRED | None (already non-active) | No | 200 idempotent |
-| Missing (owner-scoped) | None (postcondition met) | No | 200 idempotent |
+| Missing (owner-scoped) | **Create RESET tombstone** (see 7.7.3) | **Yes** (get_or_create + set_status) | 200 |
 
 **Rationale for not mutating STALE/EXPIRED to RESET:**
 - STALE and EXPIRED are already non-active; the reset postcondition is met.
@@ -217,6 +217,34 @@ idempotent 200 (RESET, STALE, EXPIRED, or missing record).
   expiry vs explicit user action vs inactivity threshold).
 - Unnecessary mutations increment versions and erase semantic distinction.
 - The chat pipeline INACTIVE outcome blocks all three statuses identically.
+
+### 7.7.3 Missing-Record Tombstone Contract
+
+When `adapter.load(key)` returns None during reset:
+
+1. Call `adapter.get_or_create(key)`.
+2. Inspect the returned record:
+   - RESET/STALE/EXPIRED → postcondition already met → return 200.
+   - ACTIVE → call `set_status(RESET, expected_version=record.version)`.
+3. Confirm status is RESET.
+4. Call `session_store.remove_session(app_conversation_id)`.
+5. Return 200.
+
+The resulting RESET row is a **durable reset tombstone**. It occupies the
+unique `(owner_user_id_hash, frontend_conversation_id)` logical key and
+prevents any later MISS-writeback `get_or_create` from producing a fresh
+ACTIVE record for the old frontend ID.
+
+**The endpoint MUST NOT return 200 for a missing record until the RESET
+tombstone has been confirmed durable.**
+
+**Why this is necessary (reset-versus-MISS race):**
+A chat request may have already passed durable lookup (MISS) and started
+a Genie conversation. Its eventual `get_or_create` writeback is idempotent
+on the logical key. If the tombstone already occupies the key, writeback
+returns the RESET record and the pipeline’s post-`get_or_create` status
+check (Boundary 2) blocks the bind. Without the tombstone, writeback would
+create a new ACTIVE record, making the old ID recoverable.
 
 ### 7.7.2 Version-Conflict Reload Policy (ACTIVE path only)
 
@@ -276,19 +304,39 @@ frontend-generated UUIDs.
 // In App() component body:
 const activeConvIdRef = useRef(activeConvId);
 
+// Defensive consistency (runs after React commit phase):
 useEffect(() => {
     activeConvIdRef.current = activeConvId;
 }, [activeConvId]);
 
-// In handleSendMessage:
-const requestConversationId = activeConvId;  // captured at send time
+// Synchronous activation helper (used for all conversation transitions):
+const activateConversation = (conversationId) => {
+    activeConvIdRef.current = conversationId;  // synchronous, immediate
+    setActiveConvId(conversationId);           // async React state
+};
+
+// In handleSendMessage — capture from the ref (always current):
+const requestConversationId = activeConvIdRef.current;
 
 // All setConversations calls target requestConversationId.
-// In finally/catch:
+// In finally/catch — guard global state:
 if (activeConvIdRef.current === requestConversationId) {
     setIsLoading(false);
 }
 ```
+
+**Why synchronous ref update is required:**
+
+`useEffect` alone runs after React commits the state update. Between
+`setActiveConvId(newId)` and the effect firing, a concurrent `finally`
+block could read the stale ref value. By updating the ref synchronously
+in `activateConversation`, the guard is effective immediately.
+
+**`activateConversation` must be used for all transitions:**
+- Reset success (new ID activation).
+- `handleNewChat` (new conversation activation).
+- Sidebar conversation selection (`onSelect`).
+- Any future active-conversation transition.
 
 This prevents an old request’s resolution from clearing the loading/error
 state on a newly activated conversation.

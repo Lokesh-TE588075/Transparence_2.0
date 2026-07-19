@@ -47,7 +47,7 @@ POST /api/conversations/{frontend_conversation_id}/reset
 | File | Change |
 |------|--------|
 | `app/main.py` | Register reset router |
-| `app/services/genie_pipeline.py` | Add `INACTIVE` to `_DurableLookupOutcome`; block inactive requests before `_run_inner`; return static no-fallback response |
+| `app/services/genie_pipeline.py` | Add `INACTIVE` to `_DurableLookupOutcome`; block inactive requests before `_run_inner`; add post-`get_or_create` status validation before `bind_genie_conversation`; return static no-fallback response |
 | `app/services/genie_session_store.py` | Add `remove_session()` method (lock-protected physical dict removal) |
 
 ### Frontend (modified files)
@@ -62,9 +62,10 @@ POST /api/conversations/{frontend_conversation_id}/reset
 
 | File | Coverage |
 |------|----------|
-| `tests/test_conversation_reset_coordinator.py` | Unit tests for coordinator logic |
+| `tests/test_conversation_reset_coordinator.py` | Unit tests for coordinator logic (including tombstone creation for missing records) |
 | `tests/test_conversation_reset_route.py` | Route tests: identity, ownership, responses |
 | `tests/test_genie_pipeline_inactive_durable_state.py` | INACTIVE outcome blocks execution; static response; no Genie call; no durable mutation |
+| `tests/test_genie_pipeline_durable_writeback.py` | Post-get_or_create status check: RESET/STALE/EXPIRED returned from get_or_create blocks bind; tombstone race simulation |
 
 ### Tests (modified files)
 
@@ -84,18 +85,25 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - Error response mapping (404, 409, 503)
 
 ### conversation_reset_coordinator.py (service)
-- Load record by `(owner_hash, frontend_conversation_id)`
+- Load record by `(owner_hash, frontend_conversation_id)` via adapter.load(key)
 - Check current status:
-  - Missing → return 200 idempotent success (postcondition satisfied)
   - Already RESET → return 200 idempotent success; do not call set_status
   - STALE → return 200 idempotent success; do not change STALE to RESET
   - EXPIRED → return 200 idempotent success; do not change EXPIRED to RESET
   - ACTIVE → call `set_status(RESET, expected_version=record.version)`
+  - **Missing → create RESET tombstone** (see below)
+- Missing-record tombstone path:
+  - Call `adapter.get_or_create(key)` to occupy the logical key
+  - Returned RESET/STALE/EXPIRED → postcondition met → 200
+  - Returned ACTIVE → `set_status(RESET, expected_version=record.version)`
+  - get_or_create unavailable → 503 fail closed
+  - MUST NOT return 200 without confirmed durable RESET tombstone
 - Handle version conflict (ACTIVE path only):
   - Reload once via `adapter.load(key)`
-  - Reload shows RESET/STALE/EXPIRED/missing → return 200 idempotent
+  - Reload shows RESET/STALE/EXPIRED → return 200 idempotent
   - Reload shows ACTIVE → return 409 fail closed
   - Reload unavailable → return 503 fail closed
+  - No repeated creation within same request
 - After any 200 outcome: call `GenieSessionStore.remove_session(app_conversation_id)`
   to physically remove the process-local session
 - Handle durable-runtime-disabled: return 503 (cannot confirm durable deactivation)
@@ -115,16 +123,20 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - Loading state management during reset call
 
 ### In-flight response safety — exact React mechanism
-- Add `const activeConvIdRef = useRef(activeConvId)` synchronised via
-  `useEffect(() => { activeConvIdRef.current = activeConvId; }, [activeConvId])`.
-- At the start of `handleSendMessage`, capture:
-  `const requestConversationId = activeConvId`.
-- All `setConversations` calls use `requestConversationId` (not the live
-  `activeConvId` which may have changed mid-flight).
+- Add `const activeConvIdRef = useRef(activeConvId)` with `useEffect`
+  synchronisation as defensive consistency.
+- Add `activateConversation(id)` helper that updates ref synchronously
+  THEN sets state: `activeConvIdRef.current = id; setActiveConvId(id)`.
+- Use `activateConversation` for all transitions (reset success, new chat,
+  sidebar selection).
+- At the start of `handleSendMessage`, capture from ref:
+  `const requestConversationId = activeConvIdRef.current`.
+- All `setConversations` calls use `requestConversationId`.
 - In `finally`/`catch`, guard global state: only call `setIsLoading(false)`
   when `activeConvIdRef.current === requestConversationId`.
 - This prevents the old request’s resolution from clearing the spinner or
-  error state on the new conversation.
+  error state on the new conversation (synchronous ref update ensures no
+  window between state commit and guard effectiveness).
 
 No AbortController required (Genie may already be processing server-side).
 The `activeConvIdRef` guard is sufficient for UI correctness.

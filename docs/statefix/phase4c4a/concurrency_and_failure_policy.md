@@ -290,20 +290,39 @@ sufficient for UI correctness.
 
 ### Layer A: Reset endpoint CAS
 
-1. Load current owner-scoped record.
-2. Missing → idempotent 200.
-3. Already RESET → idempotent 200; do not call `set_status`.
-4. STALE → idempotent 200; do not change STALE to RESET.
-5. EXPIRED → idempotent 200; do not change EXPIRED to RESET.
-6. ACTIVE → `set_status(RESET, expected_version=current.version)`.
-7. One reload maximum after version conflict.
-8. Reload shows RESET → idempotent 200.
-9. Reload shows STALE → idempotent 200.
-10. Reload shows EXPIRED → idempotent 200.
-11. Reload shows missing → idempotent 200.
-12. Reload shows ACTIVE → 409 fail closed.
-13. Unavailable reload → 503 fail closed.
-14. No delete; no CAS loop.
+**Case 1 — Record found (initial load returns a record):**
+
+1. Already RESET → idempotent 200; do not call `set_status`.
+2. STALE → idempotent 200; do not change STALE to RESET.
+3. EXPIRED → idempotent 200; do not change EXPIRED to RESET.
+4. ACTIVE → `set_status(RESET, expected_version=current.version)`.
+5. One reload maximum after version conflict (ACTIVE path only).
+6. Reload shows RESET/STALE/EXPIRED → idempotent 200.
+7. Reload shows ACTIVE → 409 fail closed.
+8. Reload unavailable → 503 fail closed.
+9. No delete; no CAS loop.
+
+**Case 2 — No record found (initial load returns None):**
+
+The coordinator MUST NOT return 200 without a durable tombstone because of
+the reset-versus-MISS race (see Section 8.1).
+
+1. Call `adapter.get_or_create(key)` to create or load the logical key.
+2. Returned record is RESET/STALE/EXPIRED → postcondition met → 200.
+3. Returned record is ACTIVE:
+   - Call `set_status(RESET, expected_version=record.version)`.
+   - Success → 200.
+   - Version conflict → one reload (same policy as Case 1 step 5–8).
+4. `get_or_create` unavailable → 503 fail closed.
+5. No repeated creation attempt within the same request.
+
+The RESET row created here is a **durable reset tombstone**. It occupies the
+unique `(owner_user_id_hash, frontend_conversation_id)` logical key and
+prevents any later MISS-writeback `get_or_create` from creating a new ACTIVE
+record for the old frontend ID.
+
+**Postcondition for all 200 outcomes:** call
+`session_store.remove_session(app_conversation_id)`.
 
 **Rationale for STALE/EXPIRED idempotency:**
 - RESET, STALE and EXPIRED are already non-active.
@@ -314,12 +333,11 @@ sufficient for UI correctness.
 - Unnecessary status changes would increment versions and erase the
   semantic distinction between why a conversation became inactive.
 
-**Layer A postcondition:** After any idempotent durable success (200),
-`remove_session(app_conversation_id)` is called to physically remove
-the old process-local session, regardless of whether the durable status
-was ACTIVE→RESET or was already non-active.
-
 ### Layer B: Chat request using old ID (post-Phase 4C4B)
+
+Two protection boundaries are required:
+
+**Boundary 1 — Initial durable lookup (before `_run_inner`):**
 
 1. Durable lookup finds record with status in {RESET, STALE, EXPIRED}.
 2. Pipeline returns `_DurableLookupOutcome.INACTIVE`.
@@ -329,6 +347,64 @@ was ACTIVE→RESET or was already non-active.
    `"This conversation is no longer active. Start a new chat."`
 6. No durable mutation occurs.
 7. No attempt to reuse the same key.
+
+**Boundary 2 — Post-Genie MISS writeback (before `bind_genie_conversation`):**
+
+After `_run_inner()` completes on a legitimate MISS, the pipeline calls
+`adapter.get_or_create(key)` to persist the new durable record. Before
+proceeding to bind:
+
+1. Validate `record.status == ConversationStatus.ACTIVE`.
+2. If RESET/STALE/EXPIRED:
+   - Do NOT call `bind_genie_conversation`.
+   - Do NOT call `update_last_genie_message`.
+   - Do NOT call `touch`.
+   - Do NOT reactivate the record.
+   - Do NOT delete the record.
+   - Clear the process-local in-memory session mapping.
+   - Return a static sanitized no-fallback error.
+3. If ACTIVE: proceed normally with bind.
+
+**Why both boundaries are required:**
+
+Boundary 1 catches the common case (old ID submitted after reset is already
+committed). Boundary 2 closes the TOCTOU race where:
+- Initial lookup returns MISS (no record exists yet).
+- `_run_inner()` starts a Genie conversation.
+- Concurrently, reset creates a RESET tombstone for the same key.
+- Writeback’s `get_or_create` returns the tombstone unchanged.
+- Without the status check, `bind_genie_conversation` would attempt to
+  mutate an inactive record.
+
+Process-local `remove_session()` alone cannot prevent this race because:
+- The original request carries its own request-local state.
+- Multiple app workers or restarted containers may be involved.
+- Process memory is not authoritative.
+- Only durable occupation of the logical key blocks later writeback.
+
+### 8.1 Reset-versus-MISS Race
+
+**Proof of race from current code:**
+
+```
+T1: Chat request → _durable_session_lookup → MISS (no record exists)
+T2: Chat request → _run_inner() → Genie conversation started externally
+T3: User clicks New Chat → reset coordinator loads key → None
+T4: (Without tombstone) Reset returns 200 "postcondition satisfied"
+T5: Chat request → _maybe_persist_durable_writeback → get_or_create
+T6: get_or_create → create_conversation → new ACTIVE record created
+T7: bind_genie_conversation succeeds → old ID is now durable and recoverable
+```
+
+After T7, the "reset" old ID has a fully bound ACTIVE durable record. On
+the next container restart, durable recovery will restore the Genie
+conversation for the old ID — violating the reset postcondition.
+
+**Resolution:** The tombstone contract (Layer A Case 2) ensures that at T3,
+the coordinator creates a RESET tombstone instead of returning success for a
+missing record. At T5, `get_or_create` returns the tombstone unchanged. At
+the status check (Boundary 2), the pipeline observes RESET and aborts the
+bind. The old ID can never become ACTIVE.
 
 ### Unavoidable in-flight race
 

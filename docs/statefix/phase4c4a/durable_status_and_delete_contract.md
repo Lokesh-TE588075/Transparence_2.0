@@ -322,6 +322,49 @@ When the durable lookup finds a record with status in
 }
 ```
 
+### 6.3.4 Post-Writeback Status Validation (Boundary 2)
+
+The INACTIVE outcome at initial lookup (Boundary 1) cannot prevent the
+reset-versus-MISS race because the initial lookup legitimately returns MISS
+when no record exists yet.
+
+Phase 4C4B must add a second status check inside
+`_persist_new_durable_conversation` (line 1760 of `genie_pipeline.py`):
+
+**Current code (unsafe):**
+```python
+record = lookup_result.record
+# Proceeds directly to inspect genie_conversation_id binding
+# NO status check
+```
+
+**Required Phase 4C4B fix:**
+```python
+record = lookup_result.record
+if record.status != ConversationStatus.ACTIVE:
+    # Tombstone or inactive record — abort writeback
+    raise _DurableWritebackError(
+        "Durable record is inactive (status={}).".format(record.status.value)
+    )
+# Only proceed with bind when status is confirmed ACTIVE
+```
+
+This closes the TOCTOU window: even when initial lookup returned MISS and
+`_run_inner()` started a Genie conversation, a concurrent reset tombstone
+blocks the bind operation.
+
+**Proven race sequence:**
+1. Chat request → `_durable_session_lookup` → MISS (no record).
+2. `_run_inner()` → Genie conversation started externally.
+3. Concurrent reset → `get_or_create` → creates RESET tombstone.
+4. Chat writeback → `get_or_create` → returns RESET record unchanged.
+5. Status check → RESET → raises `_DurableWritebackError`.
+6. Bind never called; old ID remains inactive.
+
+Without Boundary 2, step 4 would proceed to `bind_genie_conversation` and
+the old ID would become fully bound and recoverable — violating the reset
+contract.
+
 ### 6.4 Critical Finding: Same-Key get_or_create on RESET Record
 
 For a record with:

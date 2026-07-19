@@ -89,6 +89,28 @@ resolution from affecting the newly active conversation’s UI state.
 
 See `reset_semantics_decision.md` section 7.10 for full specification.
 
+**Additional ref requirement:** The `activeConvIdRef` must be updated
+synchronously (not only via `useEffect`). A helper `activateConversation(id)`
+sets `activeConvIdRef.current = id` before calling `setActiveConvId(id)`.
+This eliminates the window between state commit and effect execution where
+a concurrent `finally` could read the stale ref.
+
+### 1.7.1 Reset-versus-MISS Race Awareness
+
+The current `handleNewChat` (line 32) is purely client-side. Phase 4C4B adds
+a backend reset call that creates a durable RESET tombstone before generating
+the new ID. This tombstone prevents any in-flight chat request from
+creating a new ACTIVE durable record for the old frontend ID.
+
+Without the tombstone, the following race is possible:
+1. User clicks New Chat while a chat request is mid-flight.
+2. Reset loads no durable record (the request hasn’t written back yet).
+3. Reset returns success without occupying the logical key.
+4. In-flight request completes and persists a new ACTIVE record.
+5. Old ID becomes durable and recoverable after restart.
+
+See `concurrency_and_failure_policy.md` Section 8.1 for the full proof.
+
 ### 1.8 Late Response Cross-Contamination
 
 **Cannot occur under current code.**  Line 99:
