@@ -186,14 +186,50 @@ This avoids version inflation from repeated New Chat clicks.
 
 ### 7.7 In-Memory Cleanup
 
-After successful durable reset (or immediately if durable runtime is disabled):
-- Call `GenieSessionStore.reset_session(frontend_conversation_id)` — clears
-  `genie_conversation_id`, `last_genie_message_id`, sets `is_active=False`.
+After any successful reset outcome (200):
+- Call `GenieSessionStore.remove_session(app_conversation_id)` — physically
+  removes the entire session dict entry including all business context.
 
-`reset_session` is preferred over `reset_genie_mapping` because:
-- `reset_session` sets `is_active=False` (prevents reuse) and clears Genie IDs.
-- `reset_genie_mapping` clears Genie IDs but keeps session active and preserves
-  business context (entities, intent, etc.) — inappropriate for explicit user reset.
+`remove_session` is selected over `reset_session` because:
+- `remove_session` physically removes the session object (all fields cleared,
+  memory freed immediately, no TTL wait).
+- `reset_session` only clears Genie IDs and sets `is_active=False`; business
+  context fields remain in the dict entry until TTL expiry.
+- New Chat represents complete conversation termination; physical removal is
+  the correct semantic.
+
+`remove_session` is called regardless of which durable status triggered the
+idempotent 200 (RESET, STALE, EXPIRED, or missing record).
+
+### 7.7.1 Reset Coordinator Status Decision Table
+
+| Current durable status | Action | set_status called? | Response |
+|------------------------|--------|--------------------|----------|
+| ACTIVE | `set_status(RESET, expected_version)` | **Yes** | 200 |
+| RESET | None (already non-active) | No | 200 idempotent |
+| STALE | None (already non-active) | No | 200 idempotent |
+| EXPIRED | None (already non-active) | No | 200 idempotent |
+| Missing (owner-scoped) | None (postcondition met) | No | 200 idempotent |
+
+**Rationale for not mutating STALE/EXPIRED to RESET:**
+- STALE and EXPIRED are already non-active; the reset postcondition is met.
+- Preserving the original status retains the lifecycle reason (timeout-based
+  expiry vs explicit user action vs inactivity threshold).
+- Unnecessary mutations increment versions and erase semantic distinction.
+- The chat pipeline INACTIVE outcome blocks all three statuses identically.
+
+### 7.7.2 Version-Conflict Reload Policy (ACTIVE path only)
+
+When `set_status(RESET, expected_version)` raises version conflict:
+
+1. Call `adapter.load(key)` at most once.
+2. Reload shows RESET → 200 idempotent success.
+3. Reload shows STALE → 200 idempotent success.
+4. Reload shows EXPIRED → 200 idempotent success.
+5. Reload shows missing → 200 idempotent success.
+6. Reload shows ACTIVE → 409 fail closed.
+7. Reload unavailable → 503 fail closed.
+8. No repeated CAS. No delete.
 
 ### 7.8 Frontend Sequencing
 
@@ -229,6 +265,73 @@ The backend does NOT generate or return the new conversation ID.  The
 frontend is responsible for calling `_newConvId()` locally (as it does today).
 This preserves the existing architecture where conversation IDs are
 frontend-generated UUIDs.
+
+---
+
+### 7.10 Frontend Stale-Response Mechanism
+
+**Selected implementation (exact React pattern for Phase 4C4B):**
+
+```jsx
+// In App() component body:
+const activeConvIdRef = useRef(activeConvId);
+
+useEffect(() => {
+    activeConvIdRef.current = activeConvId;
+}, [activeConvId]);
+
+// In handleSendMessage:
+const requestConversationId = activeConvId;  // captured at send time
+
+// All setConversations calls target requestConversationId.
+// In finally/catch:
+if (activeConvIdRef.current === requestConversationId) {
+    setIsLoading(false);
+}
+```
+
+This prevents an old request’s resolution from clearing the loading/error
+state on a newly activated conversation.
+
+### 7.11 Old Conversation Read-Only UI
+
+After backend reset succeeds:
+- Mark old local conversation `isInactive: true` in React state.
+- Retain messages in sidebar for read-only viewing.
+- When user selects the inactive conversation:
+  - Show prior messages (read-only).
+  - Disable the prompt input (`ChatWindow` checks `conversation.isInactive`).
+  - Display: “This conversation is no longer active. Start a new chat.”
+- Never submit `/api/chat` using an inactive local conversation.
+- Backend INACTIVE outcome remains the authoritative safety control.
+
+### 7.12 Reset-Pending UI State
+
+- Separate `isResetting` state (not conflated with `isLoading`).
+- New Chat button disabled while `isResetting=true`.
+- Existing conversation UI retained during the reset request.
+- On 409/503/network failure: retain current conversation, show error,
+  set `isResetting=false`, permit retry.
+- On 200: mark old conversation inactive, generate new UUID, activate new
+  conversation, clear reset error.
+
+### 7.13 Browser-Refresh Scope
+
+**Phase 4C4B guarantees:**
+- Container restart recovery (durable state).
+- Scale-to-zero recovery.
+- Durable reset blocking.
+- Stale old-ID rejection (INACTIVE outcome).
+- Complete process-local session removal.
+- Frontend late-response isolation.
+
+**Phase 4C4B does NOT guarantee:**
+- Active conversation restoration after hard browser refresh.
+- Sidebar history restoration after closing/reopening the browser.
+- Cross-device conversation discovery.
+
+These require a later Phase 4D frontend persistence/history contract
+(localStorage or backend owner-scoped history API).
 
 ---
 

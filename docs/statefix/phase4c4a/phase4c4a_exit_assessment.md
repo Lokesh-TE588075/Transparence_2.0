@@ -54,7 +54,9 @@ POST /api/conversations/{frontend_conversation_id}/reset
 
 | File | Change |
 |------|--------|
-| `frontend/src/App.jsx` | `handleNewChat`: async reset call, fail-closed error handling, disable New Chat during pending reset, stale-response guard using captured conversation ID |
+| `frontend/src/App.jsx` | `handleNewChat` async; `activeConvIdRef` stale-response guard; `isResetting` state; reset API call with fail-closed error handling |
+| `frontend/src/components/Sidebar.jsx` | New Chat button disabled when `isResetting=true`; inactive conversation visual indicator (e.g. muted style) |
+| `frontend/src/components/ChatWindow.jsx` | Disable prompt input when `conversation.isInactive=true`; show static inactive notice |
 
 ### Tests (new files)
 
@@ -84,15 +86,19 @@ POST /api/conversations/{frontend_conversation_id}/reset
 ### conversation_reset_coordinator.py (service)
 - Load record by `(owner_hash, frontend_conversation_id)`
 - Check current status:
-  - Already RESET → return success (idempotent)
-  - ACTIVE/STALE/EXPIRED → proceed with `set_status(RESET, expected_version)`
-- Handle version conflict:
-  - Reload once
-  - RESET on reload → return success
-  - ACTIVE on reload → return conflict
-  - Not found on reload → return not-found
-- Call `GenieSessionStore.reset_session(frontend_conversation_id)` on success
-- Handle durable-runtime-disabled: skip durable path, do in-memory only
+  - Missing → return 200 idempotent success (postcondition satisfied)
+  - Already RESET → return 200 idempotent success; do not call set_status
+  - STALE → return 200 idempotent success; do not change STALE to RESET
+  - EXPIRED → return 200 idempotent success; do not change EXPIRED to RESET
+  - ACTIVE → call `set_status(RESET, expected_version=record.version)`
+- Handle version conflict (ACTIVE path only):
+  - Reload once via `adapter.load(key)`
+  - Reload shows RESET/STALE/EXPIRED/missing → return 200 idempotent
+  - Reload shows ACTIVE → return 409 fail closed
+  - Reload unavailable → return 503 fail closed
+- After any 200 outcome: call `GenieSessionStore.remove_session(app_conversation_id)`
+  to physically remove the process-local session
+- Handle durable-runtime-disabled: return 503 (cannot confirm durable deactivation)
 
 ---
 
@@ -108,22 +114,49 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - New Chat button disabled while reset is pending (prevents double-click)
 - Loading state management during reset call
 
-### In-flight response safety
-- Current architecture already captures `activeConvId` in the `fetch` closure
-  at send time (line 62 of App.jsx: `conversation_id: activeConvId`)
-- Response handler updates only the conversation matching the captured ID
-  (line 99: `if (c.id !== activeConvId) return c`)
-- After reset succeeds and new ID is activated, late responses from the old
-  request write to the old conversation object (still in sidebar) — not the
-  new active conversation
-- `isLoading` must be scoped or guarded: if the old request is still in-flight
-  when reset completes, the spinner on the new chat must not persist
-- Minimal safe mechanism: compare `activeConvId` at response time against
-  the current active ID before applying `setIsLoading(false)` globally
+### In-flight response safety — exact React mechanism
+- Add `const activeConvIdRef = useRef(activeConvId)` synchronised via
+  `useEffect(() => { activeConvIdRef.current = activeConvId; }, [activeConvId])`.
+- At the start of `handleSendMessage`, capture:
+  `const requestConversationId = activeConvId`.
+- All `setConversations` calls use `requestConversationId` (not the live
+  `activeConvId` which may have changed mid-flight).
+- In `finally`/`catch`, guard global state: only call `setIsLoading(false)`
+  when `activeConvIdRef.current === requestConversationId`.
+- This prevents the old request’s resolution from clearing the spinner or
+  error state on the new conversation.
 
-No AbortController is required (Genie may already be processing). The closure
-isolation is sufficient for data safety; only the loading-spinner bleed needs
-a guard.
+No AbortController required (Genie may already be processing server-side).
+The `activeConvIdRef` guard is sufficient for UI correctness.
+
+### Old conversation read-only UI
+After backend reset succeeds:
+- Mark the old local conversation as `isInactive: true` in React state.
+- Retain its existing messages in the sidebar for read-only viewing.
+- Generate and activate a new conversation ID.
+- When the user selects the inactive conversation:
+  - Show its prior messages.
+  - Disable the prompt input (ChatWindow checks `conversation.isInactive`).
+  - Display a static notice:
+    “This conversation is no longer active. Start a new chat.”
+- Never submit `/api/chat` using an inactive local conversation.
+- The backend INACTIVE outcome remains the authoritative safety control.
+
+### Reset-pending UI contract
+- Add a separate `isResetting` state (distinct from `isLoading`).
+- New Chat button disabled while `isResetting=true`.
+- Retain the existing conversation UI during the reset request.
+- Do NOT clear messages or activate a new ID before backend returns 200.
+- On 409 / 503 / network failure:
+  - Retain the current conversation.
+  - Show a sanitized error toast or inline message.
+  - Set `isResetting=false`.
+  - Permit retry.
+- On 200:
+  - Mark old local conversation `isInactive: true`.
+  - Generate new UUID via `_newConvId()`.
+  - Activate the new conversation.
+  - Clear `isResetting` and any reset error state.
 
 ---
 
@@ -188,9 +221,32 @@ Conditions met:
 3. No schema migration required.
 4. No new feature flags required.
 5. No adapter or repository changes required.
-6. Implementation surface is minimal (2 new backend files + 1 modified route registration + 1 frontend change).
+6. Implementation surface is well-defined (2 new backend files + 3 modified backend files + 3 frontend files + 4 test files).
 7. All race conditions documented with handling policies.
 8. Test scope defined.
+
+---
+
+## Browser-Refresh Scope
+
+**Phase 4C4B guarantees:**
+- Databricks App container restart recovery (via durable state).
+- Scale-to-zero recovery.
+- Durable reset (old conversation permanently blocked).
+- Stale old-ID blocking (INACTIVE outcome).
+- Complete in-memory session removal.
+- Frontend late-response isolation (activeConvIdRef guard).
+
+**Phase 4C4B does NOT by itself guarantee:**
+- Restoring the active conversation after a hard browser refresh.
+- Restoring sidebar history after closing and reopening the browser.
+- Cross-device conversation discovery.
+
+These require a later frontend persistence/history contract (Phase 4D):
+- `localStorage` persistence of active frontend conversation ID; or
+- A backend owner-scoped conversation-list/history API.
+
+This is recorded as a Phase 4D readiness item.
 
 ---
 

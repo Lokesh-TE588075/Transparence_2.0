@@ -166,8 +166,10 @@ fails, in-memory is not attempted, and 503 is returned.
 2. Perform at most ONE reload after a version conflict.
 3. After reload:
    - If status is RESET: return 200 (idempotent success).
+   - If status is STALE: return 200 (idempotent success — already non-active).
+   - If status is EXPIRED: return 200 (idempotent success — already non-active).
+   - If record is missing: return 200 (idempotent success — postcondition met).
    - If status is ACTIVE with newer version: return 409 (fail closed).
-   - If status is STALE or EXPIRED: proceed with reset using the new version.
 9. Chat requests using an old (inactive) conversation ID must be blocked
    before any Genie execution via the `INACTIVE` lookup outcome.
 10. The `INACTIVE` outcome returns a static response; no durable mutation
@@ -237,6 +239,51 @@ After New Chat:
    is already being processed, the response is based on data already
    retrieved — it does not re-read session state.
 
+### 7.1 Exact React Stale-Response Mechanism (Phase 4C4B)
+
+The current `isLoading` state (line 25 of App.jsx) is global — not
+per-conversation.  Without a guard, a late `setIsLoading(false)` from an
+old request would prematurely clear the spinner on the new conversation.
+
+**Selected mechanism (minimal, correct, does not require per-conversation
+state refactoring):**
+
+```jsx
+// 1. Add a ref tracking the current active conversation ID:
+const activeConvIdRef = useRef(activeConvId);
+
+// 2. Synchronize on every activation change:
+useEffect(() => {
+    activeConvIdRef.current = activeConvId;
+}, [activeConvId]);
+
+// 3. At the start of handleSendMessage, capture the request-time ID:
+const requestConversationId = activeConvId;
+
+// 4. All setConversations calls already correctly filter on the captured ID
+//    (line 100: c.id !== activeConvId — rename to requestConversationId).
+
+// 5. In finally/catch, guard global state updates:
+if (activeConvIdRef.current === requestConversationId) {
+    setIsLoading(false);
+}
+```
+
+**Why this works:**
+- `useRef` provides a stable mutable container that always holds the latest
+  `activeConvId`, even when read inside an old closure.
+- The captured `requestConversationId` is frozen at send time.
+- If reset completes and activates a new ID while the old request is still
+  pending, `activeConvIdRef.current !== requestConversationId` will be true,
+  so the old request’s `finally` block does NOT clear loading state.
+- A separate `isResetting` state (see concurrency section) controls the
+  New Chat button independently of `isLoading`.
+
+**AbortController:** May be added as best-effort cancellation of the fetch,
+but correctness must NOT depend on cancellation because Genie work may
+already be running server-side.  The `activeConvIdRef` guard alone is
+sufficient for UI correctness.
+
 ---
 
 ## 8. Two Concurrency Layers
@@ -245,14 +292,32 @@ After New Chat:
 
 1. Load current owner-scoped record.
 2. Missing → idempotent 200.
-3. Already RESET → idempotent 200.
-4. ACTIVE → `set_status(RESET, expected_version=current.version)`.
-5. STALE → proceed with reset (same as ACTIVE).
-6. EXPIRED → proceed with reset (same as ACTIVE).
+3. Already RESET → idempotent 200; do not call `set_status`.
+4. STALE → idempotent 200; do not change STALE to RESET.
+5. EXPIRED → idempotent 200; do not change EXPIRED to RESET.
+6. ACTIVE → `set_status(RESET, expected_version=current.version)`.
 7. One reload maximum after version conflict.
 8. Reload shows RESET → idempotent 200.
-9. Reload shows ACTIVE → 409 fail closed.
-10. No delete; no CAS loop.
+9. Reload shows STALE → idempotent 200.
+10. Reload shows EXPIRED → idempotent 200.
+11. Reload shows missing → idempotent 200.
+12. Reload shows ACTIVE → 409 fail closed.
+13. Unavailable reload → 503 fail closed.
+14. No delete; no CAS loop.
+
+**Rationale for STALE/EXPIRED idempotency:**
+- RESET, STALE and EXPIRED are already non-active.
+- The desired reset postcondition (old conversation cannot continue) is
+  already satisfied.
+- Preserving STALE and EXPIRED retains the lifecycle reason (timeout vs
+  explicit user action).
+- Unnecessary status changes would increment versions and erase the
+  semantic distinction between why a conversation became inactive.
+
+**Layer A postcondition:** After any idempotent durable success (200),
+`remove_session(app_conversation_id)` is called to physically remove
+the old process-local session, regardless of whether the durable status
+was ACTIVE→RESET or was already non-active.
 
 ### Layer B: Chat request using old ID (post-Phase 4C4B)
 

@@ -79,9 +79,15 @@ by `c.id === activeConvId` captured at send time).
 
 **Phase 4C4B requirement:** After reset succeeds and a new conversation ID
 is activated, the `setIsLoading(false)` call from the old response must be
-guarded against blindly clearing the new conversation’s loading state.
-Minimal fix: compare the captured conversation ID against the current
-`activeConvId` before applying the global loading-state change.
+guarded against clearing the new conversation’s loading state.
+
+Exact mechanism: `activeConvIdRef = useRef(activeConvId)` (synchronised via
+`useEffect`).  In `handleSendMessage`, capture `requestConversationId` at
+send time.  In `finally`/`catch`, guard: `if (activeConvIdRef.current ===
+requestConversationId) setIsLoading(false)`.  This prevents an old request’s
+resolution from affecting the newly active conversation’s UI state.
+
+See `reset_semantics_decision.md` section 7.10 for full specification.
 
 ### 1.8 Late Response Cross-Contamination
 
