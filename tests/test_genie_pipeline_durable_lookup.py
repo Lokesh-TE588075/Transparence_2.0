@@ -658,10 +658,15 @@ class TestLookupFailure:
 
 
 class TestConfirmedDegradedRecovery:
-    """Adapter returns a confirmed degraded snapshot → recovery proceeds."""
+    """Adapter returns a confirmed degraded snapshot → fail closed (Phase 4C4B2).
 
-    def test_degraded_confirmed_snapshot_recovers(self):
-        """degraded=True from adapter confirmed snapshot → send_message."""
+    Degraded results from load() must fail closed regardless of record status.
+    A concurrent RESET tombstone may have been committed while the repository
+    was unavailable, making any degraded snapshot potentially stale.
+    """
+
+    def test_degraded_confirmed_snapshot_fails_closed(self):
+        """degraded=True from adapter → fail closed snapshot, no Genie execution."""
         store = GenieSessionStore()
         client = RecordingGenieClient()
         pipeline = _build_pipeline(genie_client=client, session_store=store)
@@ -669,7 +674,7 @@ class TestConfirmedDegradedRecovery:
         repo_bundle = FakeRepositoryBundle(repo)
         adapter = DurableGenieSessionAdapter(repo_bundle, cache_store=None)
 
-        # Create a confirmed degraded result
+        # Create a confirmed degraded result (ACTIVE status, but repository was down)
         now = datetime.now(timezone.utc)
         record = ConversationRecord(
             conversation_id=str(uuid.uuid4()),
@@ -689,26 +694,22 @@ class TestConfirmedDegradedRecovery:
             degraded=True,
         )
         adapter.load = MagicMock(return_value=degraded_result)
-        # Phase 4C3: mock update so it succeeds without a real repo record
-        _upd_a = MagicMock()
-        _upd_a.genie_conversation_id = _GENIE_CONV_ID
-        _upd_a.last_genie_message_id = "msg-followup-1"
-        adapter.update_last_genie_message = MagicMock(return_value=_upd_a)
         bundle = _make_enabled_bundle(adapter)
         setattr(pipeline, "_durable_session_runtime_bundle", bundle)
 
+        # Phase 4C4B2: degraded result from load() → fail closed, no Genie execution.
         result = pipeline.run(
             "show shipments", _APP_CONV_ID,
             owner_key=_VALID_OWNER_KEY,
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
-        assert result["status"] == "success"
-        assert len(client.send_calls) == 1
-        assert client.send_calls[0]["conv_id"] == _GENIE_CONV_ID
-        assert len(client.start_calls) == 0
+        assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
+        assert len(client.start_calls) == 0   # no Genie execution
+        assert len(client.send_calls) == 0
 
-    def test_degraded_mapping_restored(self):
-        """Degraded recovery restores mapping in session store."""
+    def test_degraded_mapping_not_restored(self):
+        """Degraded result: mapping must NOT be restored in session store."""
         store = GenieSessionStore()
         client = RecordingGenieClient()
         pipeline = _build_pipeline(genie_client=client, session_store=store)
@@ -731,11 +732,6 @@ class TestConfirmedDegradedRecovery:
             record=record, source=GenieSessionLookupSource.CACHE, degraded=True,
         )
         adapter.load = MagicMock(return_value=degraded_result)
-        # Phase 4C3: mock update so it succeeds without a real repo record
-        _upd_b = MagicMock()
-        _upd_b.genie_conversation_id = _GENIE_CONV_ID
-        _upd_b.last_genie_message_id = "msg-followup-1"
-        adapter.update_last_genie_message = MagicMock(return_value=_upd_b)
         bundle = _make_enabled_bundle(adapter)
         setattr(pipeline, "_durable_session_runtime_bundle", bundle)
 
@@ -744,7 +740,8 @@ class TestConfirmedDegradedRecovery:
             owner_key=_VALID_OWNER_KEY,
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
-        assert store.get_genie_conversation_id(_APP_CONV_ID) == _GENIE_CONV_ID
+        # Phase 4C4B2: degraded → fail closed, Genie mapping must NOT be in store.
+        assert store.get_genie_conversation_id(_APP_CONV_ID) is None
 
 
 # ===========================================================================
@@ -826,15 +823,19 @@ class TestShapeRetryRecovery:
 
 
 class TestNonActiveStatus:
-    """STALE/RESET/EXPIRED records are not recovered."""
+    """STALE/RESET/EXPIRED records are classified INACTIVE (Phase 4C4B2).
+
+    Non-ACTIVE records must NOT proceed to new-conversation flow.
+    They are blocked before _run_inner with a static inactive response.
+    """
 
     @pytest.mark.parametrize("status", [
         ConversationStatus.STALE,
         ConversationStatus.RESET,
         ConversationStatus.EXPIRED,
     ])
-    def test_non_active_starts_new_conversation(self, status):
-        """Non-ACTIVE records → miss → start_conversation."""
+    def test_non_active_is_inactive_blocked(self, status):
+        """Non-ACTIVE records → INACTIVE outcome → static response, no Genie calls."""
         store = GenieSessionStore()
         client = RecordingGenieClient()
         pipeline = _build_pipeline(genie_client=client, session_store=store)
@@ -865,8 +866,10 @@ class TestNonActiveStatus:
             owner_key=_VALID_OWNER_KEY,
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
-        assert result["status"] == "success"
-        assert len(client.start_calls) == 1
+        # Phase 4C4B2: non-ACTIVE → INACTIVE → blocked before Genie execution.
+        assert result["status"] == "inactive"
+        assert result["fallback_recommended"] is False
+        assert len(client.start_calls) == 0   # _run_inner must NOT be called
         assert len(client.send_calls) == 0
 
 

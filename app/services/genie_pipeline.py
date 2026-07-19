@@ -164,6 +164,9 @@ _MSG_DURABLE_LAST_MSG_FAILED = (
     "I wasn't able to complete that request. "
     "Please try again in a moment."
 )
+_MSG_INACTIVE_CONVERSATION = (
+    "This conversation is no longer active. Start a new chat."
+)
 
 
 class _OwnerKeyContractError(Exception):
@@ -210,6 +213,19 @@ class _DurableLastMessageError(Exception):
     """
 
 
+class _DurableInactiveConversationError(Exception):
+    """Internal-only: reset tombstone encountered after Genie execution.
+
+    Raised in _persist_new_durable_conversation when get_or_create returns
+    a record with status RESET, STALE, or EXPIRED — a concurrent reset
+    occurred between the initial MISS lookup and this writeback (TOCTOU race).
+
+    Semantically distinct from _DurableWritebackError, which covers ordinary
+    infrastructure persistence failures.  The caller returns the static
+    inactive response and must NOT fall back to the custom pipeline.
+    """
+
+
 class _DurableLookupOutcome:
     """Request-local outcome of the durable session lookup.
 
@@ -219,10 +235,13 @@ class _DurableLookupOutcome:
     DISABLED  — durable mode is off; no adapter access occurred.
     MISS      — lookup executed, no recoverable record found.
     RECOVERED — existing Genie conversation restored in session store.
+    INACTIVE  — authoritative record status is RESET, STALE, or EXPIRED;
+                the request must not execute Genie (Phase 4C4B2).
     """
     DISABLED = "DISABLED"
     MISS = "MISS"
     RECOVERED = "RECOVERED"
+    INACTIVE = "INACTIVE"
 
 
 @dataclass(frozen=True)
@@ -233,13 +252,15 @@ class _DurableRequestContext:
     owner hash or frontend conversation ID.
 
     outcome
-        One of _DurableLookupOutcome.{DISABLED, MISS, RECOVERED}.
+        One of _DurableLookupOutcome.{DISABLED, MISS, RECOVERED, INACTIVE}.
     key
-        DurableGenieSessionKey for MISS and RECOVERED; None for DISABLED.
+        DurableGenieSessionKey for MISS, RECOVERED, and INACTIVE; None for
+        DISABLED.
     record
-        Confirmed ConversationRecord for RECOVERED; None for DISABLED and
-        MISS (MISS obtains a bound record inside _maybe_persist_durable_writeback
-        but that record is local to that method, not stored here).
+        Confirmed ConversationRecord for RECOVERED; None for DISABLED, MISS,
+        and INACTIVE.  MISS obtains a bound record inside
+        _maybe_persist_durable_writeback but that record is local to that
+        method, not stored here.
     """
     outcome: str
     key: Optional[Any]
@@ -426,6 +447,18 @@ class GeniePipeline:
                 frontend_conversation_id=frontend_conversation_id,
                 app_conversation_id=app_conversation_id,
             )
+
+            # Phase 4C4B2: Block inactive durable conversations before any Genie
+            # execution.  INACTIVE covers authoritative RESET, STALE, and EXPIRED
+            # records.  No _run_inner, no Genie calls, no writeback, no fallback.
+            if _durable_ctx.outcome == _DurableLookupOutcome.INACTIVE:
+                try:
+                    self._store.remove_session(app_conversation_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                return self._build_inactive_response(
+                    app_conversation_id, start_time, execution_time_ms
+                )
 
             # Phase 4C2B/4C3: capture result so the post-execution writeback and
             # final-message persistence run after ALL shape-validation retries
@@ -1465,17 +1498,24 @@ class GeniePipeline:
         if result is None:
             return _DurableRequestContext(outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None)
 
-        # --- Outcome A.1: Degraded-read policy ---
-        # Per adapter contract, degraded=True means the result came from an
-        # adapter-local snapshot that was PREVIOUSLY CONFIRMED by the repository.
-        # This is acceptable for recovery.  DurableGenieSessionUnavailableError
-        # (caught above) is the fail-closed path when NO confirmed snapshot
-        # exists.  Confirmed degraded reads are valid recovery sources.
+        # --- Outcome A.1: Degraded-read policy (Phase 4C4B2) ---
+        # Per adapter contract, degraded=True means the repository was unavailable
+        # and the result came from an adapter-local confirmed snapshot.  A concurrent
+        # RESET tombstone could have been committed to the authoritative repository
+        # while it was down, making the snapshot stale and unsafe for continued
+        # Genie execution.  Fail closed: no Genie execution, no custom fallback.
+        if result.degraded:
+            raise _DurableLookupUnavailableError(
+                "Durable session lookup returned a degraded result; consistency required."
+            )
 
-        # --- Outcome A.2: Only recover ACTIVE records ---
+        # --- Outcome A.2: INACTIVE classification (Phase 4C4B2) ---
+        # Authoritative RESET, STALE, or EXPIRED records must not be discarded into
+        # MISS (which would allow new Genie execution).  They are classified as
+        # INACTIVE so the caller can block the request before any Genie execution.
         record = result.record
         if record.status != ConversationStatus.ACTIVE:
-            return _DurableRequestContext(outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None)  # Non-active: new-conversation flow.
+            return _DurableRequestContext(outcome=_DurableLookupOutcome.INACTIVE, key=durable_key, record=None)
 
         # --- Outcome B: Active record with Genie conversation ID ---
         genie_conversation_id = record.genie_conversation_id
@@ -1526,6 +1566,55 @@ class GeniePipeline:
             "export_mode":       None,
             "execution_time_ms": elapsed_ms,
             "conversation_id":   app_conversation_id,
+            "clarification":     None,
+            "source":                  "genie",
+            "genie_conversation_id":   None,
+            "genie_message_id":        None,
+            "generated_sql":           None,
+            "suggested_questions":     [],
+            "has_visualization":       False,
+            "visualization":           None,
+            "attachment_types":        [],
+            "debug_info":              None,
+            "fallback_recommended":    False,
+        }
+
+    def _build_inactive_response(
+        self,
+        app_conversation_id: str,
+        start_time: float,
+        execution_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        """Build a static sanitized response for inactive/reset conversations.
+
+        Returns status='inactive' with fallback_recommended=False.
+        No owner hash, frontend ID, durable record ID, Genie conversation ID,
+        Genie message ID, version, or internal exception text is exposed.
+        This response is used for both BOUNDARY 1 (initial INACTIVE lookup)
+        and BOUNDARY 2 (reset tombstone detected after Genie execution).
+        """
+        elapsed_ms = (
+            execution_time_ms
+            if execution_time_ms is not None
+            else int((time.monotonic() - start_time) * 1000)
+        )
+        return {
+            "status":            "inactive",
+            "message":           _MSG_INACTIVE_CONVERSATION,
+            "is_table":          False,
+            "table_data":        None,
+            "row_count":         0,
+            "preview_row_count": 0,
+            "returned_row_count": 0,
+            "total_row_count":   None,
+            "export_row_count":  None,
+            "display_row_limit": self._table_display_row_limit,
+            "download_key":      None,
+            "export_id":         None,
+            "export_status":     None,
+            "export_mode":       None,
+            "execution_time_ms": elapsed_ms,
+            "conversation_id":   None,
             "clarification":     None,
             "source":                  "genie",
             "genie_conversation_id":   None,
@@ -1613,6 +1702,18 @@ class GeniePipeline:
                 frontend_conversation_id=frontend_conversation_id,
                 final_genie_conversation_id=final_genie_conv_id,
                 app_conversation_id=app_conversation_id,
+            )
+        except _DurableInactiveConversationError:
+            # Phase 4C4B2: Reset tombstone detected after Genie execution.
+            # A concurrent reset occurred between the initial MISS lookup and
+            # this writeback (TOCTOU race).  Fail closed: clear in-memory
+            # session entirely, return static inactive response, no fallback.
+            try:
+                self._store.remove_session(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return self._build_inactive_response(
+                app_conversation_id, start_time, execution_time_ms
             )
         except _DurableWritebackError:
             # Fail closed: clear the newly established in-memory mapping so
@@ -1737,6 +1838,9 @@ class GeniePipeline:
             DurableGenieSessionVersionConflictError,
             DurableGenieSessionAdapterError,
         )
+        from app.services.conversation_repository import (
+            ConversationStatus as _ConversationStatusWB,
+        )
 
         # --- Build key ---
         try:
@@ -1756,6 +1860,21 @@ class GeniePipeline:
             raise _DurableWritebackError("Durable adapter error.") from exc
         except Exception as exc:
             raise _DurableWritebackError("Durable get-or-create failed.") from exc
+
+        # Phase 4C4B2: Reject degraded get-or-create result.
+        # Repository was temporarily unavailable; authoritative state is unconfirmed.
+        # A concurrent RESET tombstone may exist in the repository.
+        if lookup_result.degraded:
+            raise _DurableWritebackError("Durable get-or-create returned a degraded result.")
+
+        # Phase 4C4B2: Reset-tombstone TOCTOU protection.
+        # A concurrent reset may have placed a RESET, STALE, or EXPIRED tombstone
+        # between the initial MISS lookup and this writeback.  Never bind a new
+        # Genie conversation to a non-ACTIVE record.
+        if lookup_result.record.status != _ConversationStatusWB.ACTIVE:
+            raise _DurableInactiveConversationError(
+                "Durable get-or-create returned a non-ACTIVE record; concurrent reset detected."
+            )
 
         record = lookup_result.record
 
