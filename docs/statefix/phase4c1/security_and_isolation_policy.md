@@ -31,11 +31,23 @@ The error:
 - Uses a static sanitized message.
 - Never exposes the supplied value.
 - Never logs the value.
-- Is caught by the pipeline's top-level error handler.
-- Results in `status="error"` and `fallback_recommended=True`.
+- Is caught by a dedicated `_OwnerKeyContractError` handler.
+- Results in `status="error"` and `fallback_recommended=False`.
+- Custom pipeline fallback is PROHIBITED for this failure.
+- No request is processed without the trusted owner key.
+
+Normal unrelated Genie failures (timeouts, client errors, execution
+errors) continue to set `fallback_recommended=True` and allow the
+custom pipeline fallback to execute.
 
 ## Audit Principal Exclusion
 
 `audit_principal` is explicitly excluded from pipeline plumbing.
 It remains attached to `request.state` only and is not passed to
 the pipeline in any form.
+
+## No Persistent Dependency Stubs
+
+All Phase 4C1 tests use the real `rapidfuzz` dependency.
+No `sys.modules` substitutions remain in test files.
+Test collection order does not affect results.

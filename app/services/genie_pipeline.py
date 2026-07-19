@@ -153,20 +153,32 @@ _MSG_INVALID_OWNER_KEY = (
 )
 
 
+class _OwnerKeyContractError(Exception):
+    """Internal-only exception for owner-key structural violations.
+
+    This is never exposed through the public response.  It signals that
+    the trusted owner key failed structural validation, which is an
+    internal contract violation — not a user-facing error.
+
+    When this error is raised, the pipeline MUST NOT fall back to the
+    custom pipeline because the trusted identity contract is broken.
+    """
+
+
 def _validate_owner_key(owner_key: object) -> None:
     """Validate the structural contract of a trusted owner key."""
     if not isinstance(owner_key, str):
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
     if owner_key != owner_key.strip():
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
     if not owner_key:
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
     if "@" in owner_key:
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
     if len(owner_key) != _OWNER_KEY_LENGTH:
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
     if not _OWNER_KEY_RE.match(owner_key):
-        raise ValueError(_MSG_INVALID_OWNER_KEY)
+        raise _OwnerKeyContractError(_MSG_INVALID_OWNER_KEY)
 
 
 # =============================================================================
@@ -353,6 +365,14 @@ class GeniePipeline:
             return self._build_error_response(
                 app_conversation_id, start_time, execution_time_ms,
                 user_message=_dbg_msg,
+            )
+
+        except _OwnerKeyContractError:
+            # Owner-key contract violation: MUST NOT fall back to custom
+            # pipeline.  The trusted identity contract is broken; processing
+            # without the owner key is prohibited.  No details are logged.
+            return self._build_owner_key_error_response(
+                app_conversation_id, start_time, execution_time_ms,
             )
 
         except Exception as exc:  # noqa: BLE001
@@ -1169,6 +1189,53 @@ class GeniePipeline:
         if self._export_strip_limit:
             cleaned = re.sub(r"(?is)\s+LIMIT\s+\d+\s*$", "", cleaned).strip()
         return cleaned or None
+
+    def _build_owner_key_error_response(
+        self,
+        app_conversation_id: str,
+        start_time: float,
+        execution_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        """Build an error response for owner-key contract violations.
+
+        Unlike _build_error_response, this sets fallback_recommended=False
+        because the trusted identity contract is broken and the request
+        must not be processed by any pipeline without the owner key.
+        """
+        elapsed_ms = (
+            execution_time_ms
+            if execution_time_ms is not None
+            else int((time.monotonic() - start_time) * 1000)
+        )
+        return {
+            "status":            "error",
+            "message":           _MSG_INVALID_OWNER_KEY,
+            "is_table":          False,
+            "table_data":        None,
+            "row_count":         0,
+            "preview_row_count": 0,
+            "returned_row_count": 0,
+            "total_row_count": None,
+            "export_row_count": None,
+            "display_row_limit": self._table_display_row_limit,
+            "download_key":      None,
+            "export_id":         None,
+            "export_status":     None,
+            "export_mode":       None,
+            "execution_time_ms": elapsed_ms,
+            "conversation_id":   app_conversation_id,
+            "clarification":     None,
+            "source":                  "genie",
+            "genie_conversation_id":   None,
+            "genie_message_id":        None,
+            "generated_sql":           None,
+            "suggested_questions":     [],
+            "has_visualization":       False,
+            "visualization":           None,
+            "attachment_types":        [],
+            "debug_info":              None,
+            "fallback_recommended":    False,
+        }
 
     def _build_error_response(
         self,

@@ -6,31 +6,13 @@ isolation, and confirms no durable state is accessed.
 """
 from __future__ import annotations
 
-import sys
-import types
 import threading
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub rapidfuzz before any app import
-# ---------------------------------------------------------------------------
-
-_fake_fuzz = SimpleNamespace(
-    ratio=lambda *a, **k: 100,
-    token_sort_ratio=lambda *a, **k: 0,
-    partial_ratio=lambda *a, **k: 0,
-)
-_fake_rapidfuzz = types.ModuleType("rapidfuzz")
-_fake_rapidfuzz.fuzz = _fake_fuzz
-_fake_rapidfuzz.process = SimpleNamespace(extractOne=lambda *a, **k: None)
-sys.modules.setdefault("rapidfuzz", _fake_rapidfuzz)
-sys.modules.setdefault("rapidfuzz.fuzz", _fake_fuzz)
-
-from app.services.genie_pipeline import GeniePipeline, _validate_owner_key
+from app.services.genie_pipeline import GeniePipeline, _validate_owner_key, _OwnerKeyContractError
 from app.services.genie_session_store import GenieSessionStore
 
 
@@ -266,41 +248,43 @@ class TestInvalidOwnerKey:
     def test_empty_string_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="")
-        # The pipeline catches all exceptions and returns error dict
-        # But _validate_owner_key raises ValueError which is caught by the
-        # except Exception block and returns fallback_recommended=True
         assert result["status"] == "error"
-        assert result["fallback_recommended"] is True
+        assert result["fallback_recommended"] is False
 
     # Test 17: whitespace-only rejected
     def test_whitespace_only_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="   ")
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 18: short value rejected
     def test_short_value_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="abcd1234")
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 19: long value rejected
     def test_long_value_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="a" * 65)
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 20: uppercase hex rejected
     def test_uppercase_hex_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="A" * 64)
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 21: non-hex value rejected
     def test_non_hex_value_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key="g" * 64)
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 22: value containing @ rejected
     def test_at_sign_rejected(self):
@@ -308,18 +292,21 @@ class TestInvalidOwnerKey:
         bad_key = "a" * 32 + "@" + "b" * 31
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key=bad_key)
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 23: surrounding whitespace rejected
     def test_surrounding_whitespace_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key=" " + "a" * 64 + " ")
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 24: non-string rejected
     def test_non_string_rejected(self):
         pl = _build_pipeline()
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key=12345)
         assert result["status"] == "error"
+        assert result["fallback_recommended"] is False
 
     # Test 25: public error hides supplied value
     def test_error_hides_supplied_value(self):
@@ -328,13 +315,15 @@ class TestInvalidOwnerKey:
         result = pl.run(user_message="test", app_conversation_id="c1", owner_key=bad_key)
         assert bad_key not in result.get("message", "")
         assert bad_key not in str(result)
+        assert result["fallback_recommended"] is False
 
     # Test 26: Genie client not called after validation failure
     def test_genie_not_called_after_validation_failure(self):
         client = FakeGenieClient()
         pl = _build_pipeline(genie_client=client)
-        pl.run(user_message="test", app_conversation_id="c1", owner_key="invalid!")
+        result = pl.run(user_message="test", app_conversation_id="c1", owner_key="invalid!")
         assert len(client.calls) == 0
+        assert result["fallback_recommended"] is False
 
     # Test 27: no durable adapter call after validation failure
     def test_no_durable_adapter_after_validation_failure(self):
@@ -342,8 +331,29 @@ class TestInvalidOwnerKey:
             "app.services.durable_genie_session_adapter.DurableGenieSessionAdapter"
         ) as mock_adapter:
             pl = _build_pipeline()
-            pl.run(user_message="test", app_conversation_id="c1", owner_key="bad")
+            result = pl.run(user_message="test", app_conversation_id="c1", owner_key="bad")
         mock_adapter.assert_not_called()
+        assert result["fallback_recommended"] is False
+
+    # Test: normal Genie errors retain fallback_recommended=True
+    def test_normal_genie_errors_retain_fallback_true(self):
+        """Unrelated Genie failures still allow custom pipeline fallback."""
+        from app.services.genie_client import GenieClientError
+
+        class _FailingClient:
+            def start_conversation(self, *a, **k):
+                raise GenieClientError("connection refused")
+            def send_message(self, *a, **k):
+                raise GenieClientError("connection refused")
+
+        pl = _build_pipeline(genie_client=_FailingClient())
+        result = pl.run(
+            user_message="show delayed shipments from China",
+            app_conversation_id="c1",
+            owner_key=_VALID_OWNER_KEY,
+        )
+        assert result["status"] == "error"
+        assert result["fallback_recommended"] is True
 
 
 # ===========================================================================
@@ -464,56 +474,56 @@ class TestValidateOwnerKeyFunction:
         _validate_owner_key("0123456789abcdef" * 4)
 
     def test_rejects_none(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key(None)
 
     def test_rejects_int(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key(123)
 
     def test_rejects_empty(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("")
 
     def test_rejects_whitespace_only(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("   ")
 
     def test_rejects_leading_space(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key(" " + "a" * 64)
 
     def test_rejects_trailing_space(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("a" * 64 + " ")
 
     def test_rejects_short(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("a" * 63)
 
     def test_rejects_long(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("a" * 65)
 
     def test_rejects_uppercase(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("A" * 64)
 
     def test_rejects_mixed_case(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("aA" * 32)
 
     def test_rejects_non_hex(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("g" * 64)
 
     def test_rejects_at_sign(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(_OwnerKeyContractError):
             _validate_owner_key("a" * 32 + "@" + "a" * 31)
 
     def test_error_message_is_static(self):
         bad_key = "x" * 64
-        with pytest.raises(ValueError, match="Internal error"):
+        with pytest.raises(_OwnerKeyContractError, match="Internal error"):
             _validate_owner_key(bad_key)
 
     def test_error_does_not_contain_value(self):
@@ -521,5 +531,5 @@ class TestValidateOwnerKeyFunction:
         try:
             _validate_owner_key(bad_key)
             assert False, "Should have raised"
-        except ValueError as e:
+        except _OwnerKeyContractError as e:
             assert bad_key not in str(e)

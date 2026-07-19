@@ -16,21 +16,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Stub rapidfuzz before any app import
-# ---------------------------------------------------------------------------
-
-_fake_fuzz = SimpleNamespace(
-    ratio=lambda *a, **k: 100,
-    token_sort_ratio=lambda *a, **k: 0,
-    partial_ratio=lambda *a, **k: 0,
-)
-_fake_rapidfuzz = types.ModuleType("rapidfuzz")
-_fake_rapidfuzz.fuzz = _fake_fuzz
-_fake_rapidfuzz.process = SimpleNamespace(extractOne=lambda *a, **k: None)
-sys.modules.setdefault("rapidfuzz", _fake_rapidfuzz)
-sys.modules.setdefault("rapidfuzz.fuzz", _fake_fuzz)
-
-# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -330,12 +315,16 @@ class TestEnabledPath:
     def test_owner_key_not_from_conversation_id(self):
         identity = _make_identity(_VALID_HASH)
         genie = _CapturingGenie()
-        request = _make_request()
-        body = _make_body(conversation_id=_VALID_HASH)  # attempt inject via conv_id
+        # Use distinct values so the assertion proves separation
+        request = _make_request(session_id="sess-xyz")
+        body = _make_body(conversation_id="frontend-conv-99")
         _run_chat(request, body, resolver_return=identity, genie_instance=genie)
+        # owner_key comes from the trusted identity, not conversation_id
         assert genie.calls[0]["owner_key"] == _VALID_HASH
-        # conv_id is separate
-        assert _VALID_HASH in genie.calls[0]["app_conversation_id"] or True
+        # app_conversation_id is still session_id:frontend_conversation_id
+        assert genie.calls[0]["app_conversation_id"] == "sess-xyz:frontend-conv-99"
+        # owner_key did NOT replace or alter the session-key construction
+        assert _VALID_HASH not in genie.calls[0]["app_conversation_id"]
 
     # Test 17: owner key cannot be overridden from legacy email headers
     def test_owner_key_not_from_legacy_headers(self):
@@ -466,9 +455,9 @@ class TestFailuresAndBoundaries:
                 asyncio.run(chat_mod.chat(request=request, body=body))
         assert len(genie.calls) == 0
 
-    # Test 25: malformed internal owner key fails safely
+    # Test 25: malformed internal owner key fails safely (fallback disabled)
     def test_malformed_owner_key_fails_safely(self):
-        """If identity somehow produces a bad hash, pipeline returns error."""
+        """If identity somehow produces a bad hash, pipeline blocks fallback."""
         bad_identity = SimpleNamespace(
             owner_user_id_hash="BAD_HASH",
             audit_principal="x",
@@ -476,12 +465,90 @@ class TestFailuresAndBoundaries:
         )
 
         class _ValidatingGenie:
-            """Fake that replicates real pipeline validation behaviour."""
+            """Fake that replicates real pipeline validation + no-fallback."""
+            def __init__(self):
+                self.calls = []
+
             def run(self, **kwargs):
-                from app.services.genie_pipeline import _validate_owner_key
+                from app.services.genie_pipeline import (
+                    _validate_owner_key, _OwnerKeyContractError,
+                    _MSG_INVALID_OWNER_KEY,
+                )
+                self.calls.append(kwargs)
                 ok = kwargs.get("owner_key")
                 if ok is not None:
-                    _validate_owner_key(ok)
+                    try:
+                        _validate_owner_key(ok)
+                    except _OwnerKeyContractError:
+                        return {
+                            "status": "error",
+                            "message": _MSG_INVALID_OWNER_KEY,
+                            "is_table": False,
+                            "fallback_recommended": False,
+                            "row_count": 0,
+                            "preview_row_count": 0,
+                            "returned_row_count": 0,
+                            "display_row_limit": 100,
+                        }
+                return {
+                    "status": "success", "message": "ok", "is_table": False,
+                    "fallback_recommended": False, "row_count": 0,
+                    "preview_row_count": 0, "returned_row_count": 0,
+                    "display_row_limit": 100,
+                }
+
+        request = _make_request()
+        body = _make_body()
+
+        import app.routes.chat as chat_mod
+        resolver = MagicMock(return_value=bad_identity)
+        genie = _ValidatingGenie()
+        fake_mod = types.ModuleType("app.services.genie_backend_factory")
+        fake_mod.get_genie_pipeline = lambda user_token=None: genie
+        stub_settings = _build_genie_settings(fallback=False)
+
+        with (
+            patch.object(chat_mod, "resolve_request_owner_identity", resolver),
+            patch.object(chat_mod, "_app_settings", stub_settings),
+            patch.object(chat_mod, "_get_services", return_value=_build_stub_services()),
+            patch.dict(sys.modules, {"app.services.genie_backend_factory": fake_mod}),
+        ):
+            response = asyncio.run(chat_mod.chat(request=request, body=body))
+
+        assert response.status == "error"
+        assert response.fallback_recommended is False
+        assert "BAD_HASH" not in str(response)
+
+    # Test 25b: malformed owner key blocks custom fallback even when enabled
+    def test_malformed_owner_key_blocks_fallback_when_enabled(self):
+        """Custom pipeline fallback must NOT execute after identity failure."""
+        bad_identity = SimpleNamespace(
+            owner_user_id_hash="BAD_HASH",
+            audit_principal="x",
+            source="x-forwarded-user",
+        )
+
+        class _ValidatingGenie:
+            def run(self, **kwargs):
+                from app.services.genie_pipeline import (
+                    _validate_owner_key, _OwnerKeyContractError,
+                    _MSG_INVALID_OWNER_KEY,
+                )
+                ok = kwargs.get("owner_key")
+                if ok is not None:
+                    try:
+                        _validate_owner_key(ok)
+                    except _OwnerKeyContractError:
+                        return {
+                            "status": "error",
+                            "message": _MSG_INVALID_OWNER_KEY,
+                            "is_table": False,
+                            "fallback_recommended": False,
+                            "row_count": 0,
+                            "preview_row_count": 0,
+                            "returned_row_count": 0,
+                            "display_row_limit": 100,
+                        }
                 return {
                     "status": "success", "message": "ok", "is_table": False,
                     "fallback_recommended": False, "row_count": 0,
@@ -496,7 +563,8 @@ class TestFailuresAndBoundaries:
         resolver = MagicMock(return_value=bad_identity)
         fake_mod = types.ModuleType("app.services.genie_backend_factory")
         fake_mod.get_genie_pipeline = lambda user_token=None: _ValidatingGenie()
-        stub_settings = _build_genie_settings(fallback=False)
+        # fallback=True: custom pipeline fallback is enabled
+        stub_settings = _build_genie_settings(fallback=True)
 
         with (
             patch.object(chat_mod, "resolve_request_owner_identity", resolver),
@@ -506,10 +574,9 @@ class TestFailuresAndBoundaries:
         ):
             response = asyncio.run(chat_mod.chat(request=request, body=body))
 
-        # The pipeline ValueError is caught by chat.py's except block
-        # and surfaces as an error response (fallback disabled)
+        # Even with fallback enabled, owner-key failure blocks fallback
         assert response.status == "error"
-        # Bad hash value must not appear in response
+        assert response.fallback_recommended is False
         assert "BAD_HASH" not in str(response)
 
     # Test 26: no owner hash appears in response

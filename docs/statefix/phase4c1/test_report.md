@@ -4,16 +4,17 @@
 
 | Suite | Tests | Result |
 |-------|-------|--------|
-| Focused pipeline tests | 51 | PASSED |
-| Focused chat tests | 38 | PASSED |
-| Phase 4B2 + 4C1 combined | 195 | PASSED |
-| Complete non-live suite | 1758 | PASSED |
+| Focused pipeline tests | 52 | PASSED |
+| Focused chat tests | 39 | PASSED |
+| Phase 4B2 + 4C1 focused | 197 | PASSED |
+| Exact combined suite (20 files) | 933 | PASSED |
+| Complete non-live suite | 1760 | PASSED |
 
 ## Test Files
 
 ### New (Phase 4C1)
-- `tests/test_genie_pipeline_owner_key_plumbing.py` — 51 tests
-- `tests/test_chat_owner_key_plumbing.py` — 38 tests
+- `tests/test_genie_pipeline_owner_key_plumbing.py` — 52 tests
+- `tests/test_chat_owner_key_plumbing.py` — 39 tests
 
 ### Modified (narrow boundary updates)
 - `tests/test_chat_trusted_identity_extraction.py` — Test 20 updated
@@ -24,16 +25,12 @@
   `owner_user_id_hash` reference in chat.py (Phase 4C1 approved)
   while preserving provider/settings exclusion assertions.
 
-## Coverage Areas
+## Key Validations
 
-- Backward compatibility (5 tests)
-- Valid owner key handling (10 tests)
-- Invalid owner key validation (12 tests)
-- Request isolation (8 tests)
-- Validation function unit tests (16 tests)
-- Disabled path behaviour (9 tests)
-- Enabled path behaviour (12 tests)
-- Error handling and boundaries (13 tests)
-- Request isolation in chat (4 tests)
+- Owner-key contract failure returns `fallback_recommended=False`
+- Custom pipeline fallback is prohibited for identity failures
+- Normal Genie errors retain `fallback_recommended=True`
+- All tests use the real `rapidfuzz` dependency (no persistent stubs)
+- `test_input_normalizer.py` passes independently of test collection order
 
 ## Zero Failures, Zero Skipped, Zero Collection Errors
