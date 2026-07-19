@@ -511,8 +511,19 @@ class TestIntegrationBoundaries:
         assert "anonymous" not in source
 
     def test_app_yaml_unchanged(self):
+        # Phase 4B1: CONVERSATION_OWNER_HMAC_SECRET is now declared in app.yaml
+        # via valueFrom (not plaintext).  The pre-4B1 "not in source" assertion
+        # is superseded; this test now validates the Phase 4B1 configuration.
         source = _asset_source("app.yaml")
-        assert "CONVERSATION_OWNER_HMAC_SECRET" not in source
+        assert "CONVERSATION_OWNER_HMAC_SECRET" in source, (
+            "Phase 4B1 requires CONVERSATION_OWNER_HMAC_SECRET in app.yaml"
+        )
+        assert "valueFrom: conversation-owner-hmac-secret" in source, (
+            "CONVERSATION_OWNER_HMAC_SECRET must use valueFrom, not a plaintext value"
+        )
+        assert "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY" in source, (
+            "Phase 4B1 requires ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY feature flag in app.yaml"
+        )
 
     def test_requirements_txt_unchanged(self):
         source = _asset_source("requirements.txt")

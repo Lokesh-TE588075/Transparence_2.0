@@ -162,3 +162,17 @@ env:
   - name: ENABLE_LAKEBASE_CONVERSATION_REPOSITORY
     description: "Allow the Lakebase conversation repository backend to be selected (Phase 3A/3D — disabled by default)"
     value: "false"
+
+  # -------------------------------------------------------------------------
+  # Phase 4B1: Owner-Identity HMAC secret — disabled-by-default.
+  # CONVERSATION_OWNER_HMAC_SECRET is injected at runtime via the app secret
+  # resource key 'conversation-owner-hmac-secret' (scope: transparence-owner-identity,
+  # key: conversation-owner-hmac-v1).  Do NOT embed the secret value here.
+  # ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY must remain false until Phase 4B2
+  # integration is explicitly activated after full test gate.
+  # -------------------------------------------------------------------------
+  - name: CONVERSATION_OWNER_HMAC_SECRET
+    valueFrom: conversation-owner-hmac-secret
+  - name: ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY
+    description: "Enable HMAC-signed request owner identity enforcement (Phase 4B2 — disabled by default)"
+    value: "false"
