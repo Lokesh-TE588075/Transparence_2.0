@@ -20,7 +20,7 @@ import time
 import threading
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.business_rules.mappings import (
@@ -38,6 +38,14 @@ from app.services.audit_service import AuditService
 from app.services.conversation_manager import ConversationManager
 from app.services.llm_service import Intent, LLMService
 from app.services.sql_service import SQLService
+
+# --- Phase 4B2: Trusted request identity runtime (disabled by default) ---
+from app.services.request_owner_identity_runtime import (
+    REQUEST_OWNER_IDENTITY_STATE_ATTRIBUTE,
+    RequestOwnerIdentityRuntimeConfigurationError,
+    RequestOwnerIdentityRuntimeResolutionError,
+    resolve_request_owner_identity,
+)
 
 # --- Phase 7B: New accuracy pipeline (feature-flag controlled) ---
 from app.config import settings as _app_settings
@@ -178,6 +186,30 @@ _EXPORT_THRESHOLD = 20
 async def chat(request: Request, body: ChatRequest):
     """Process a natural language query through the full pipeline."""
     start_time = time.time()
+
+    # ── Phase 4B2: Trusted request identity extraction (disabled by default) ─
+    # When ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY is false (the default),
+    # resolve_request_owner_identity returns None immediately without reading
+    # CONVERSATION_OWNER_HMAC_SECRET or inspecting any trusted header.
+    # When true, the runtime derives RequestOwnerIdentity from the trusted
+    # forwarded-user header and attaches the immutable object to request.state.
+    # The identity is not yet used to
+    # access durable conversations (Phase 4C).
+    try:
+        _trusted_identity = resolve_request_owner_identity(headers=request.headers)
+    except RequestOwnerIdentityRuntimeConfigurationError:
+        raise HTTPException(
+            status_code=503,
+            detail="Trusted request identity is unavailable.",
+        )
+    except RequestOwnerIdentityRuntimeResolutionError:
+        raise HTTPException(
+            status_code=401,
+            detail="Trusted request identity is required.",
+        )
+    if _trusted_identity is not None:
+        setattr(request.state, REQUEST_OWNER_IDENTITY_STATE_ATTRIBUTE, _trusted_identity)
+
     llm, sql_svc, validator, conversations, audit = _get_services()
 
     user_message = body.message.strip()

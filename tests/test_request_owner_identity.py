@@ -484,8 +484,17 @@ class TestProviderAndSecurity:
 
 class TestIntegrationBoundaries:
     def test_chat_py_does_not_import_identity_module(self):
+        # Phase 4B2: chat.py is permitted to import request_owner_identity_runtime
+        # (the approved Phase 4B2 boundary wrapper) but must NOT import the core
+        # request_owner_identity module directly.
         source = _asset_source("app/routes/chat.py")
-        assert "request_owner_identity" not in source
+        assert "from app.services.request_owner_identity import" not in source, (
+            "chat.py must not import request_owner_identity directly; "
+            "only request_owner_identity_runtime is permitted in Phase 4B2"
+        )
+        assert "RequestOwnerIdentityProvider" not in source, (
+            "chat.py must not reference RequestOwnerIdentityProvider directly"
+        )
 
     def test_main_py_does_not_import_identity_module(self):
         source = _asset_source("app/main.py")

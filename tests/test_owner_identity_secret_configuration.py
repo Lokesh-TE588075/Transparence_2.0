@@ -274,11 +274,15 @@ def test_no_generated_runtime_secret():
 
 
 def test_chat_py_does_not_import_request_owner_identity():
-    """Test 14 — chat.py must not import request_owner_identity."""
+    """Test 14 — chat.py must not import the core request_owner_identity module directly.
+
+    Phase 4B2: chat.py may import request_owner_identity_runtime (the approved
+    Phase 4B2 boundary wrapper) but must NOT directly import the core module.
+    """
     source = _CHAT_PY.read_text(encoding="utf-8")
-    assert "request_owner_identity" not in source, (
-        "chat.py must not import or reference request_owner_identity — "
-        "identity enforcement must not be active in the request path"
+    assert "from app.services.request_owner_identity import" not in source, (
+        "chat.py must not import request_owner_identity directly — "
+        "only request_owner_identity_runtime is approved for Phase 4B2"
     )
 
 
@@ -303,7 +307,13 @@ def test_main_py_does_not_import_request_owner_identity():
 
 
 def test_no_request_path_identity_enforcement():
-    """Test 17 — No request-path file should enforce owner identity."""
+    """Test 17 — No request-path file should directly import the core owner identity module.
+
+    Phase 4B2: chat.py is permitted to import request_owner_identity_runtime (the
+    approved Phase 4B2 boundary wrapper).  All other request-path files must not
+    reference request_owner_identity at all.  Direct import of the core module by
+    any request-path file remains forbidden.
+    """
     request_path_files = [
         _REPO_ROOT / "app" / "routes" / "chat.py",
         _REPO_ROOT / "app" / "routes" / "export.py",
@@ -315,13 +325,19 @@ def test_no_request_path_identity_enforcement():
         if not path.exists():
             continue
         source = path.read_text(encoding="utf-8")
-        assert "request_owner_identity" not in source, (
-            f"{path.name} must not reference request_owner_identity — "
-            "identity enforcement must remain dormant until Phase 4B2"
+        # Direct import of the core module is always forbidden.
+        assert "from app.services.request_owner_identity import" not in source, (
+            f"{path.name} must not directly import the core request_owner_identity module"
         )
         assert "RequestOwnerIdentityProvider" not in source, (
-            f"{path.name} must not reference RequestOwnerIdentityProvider"
+            f"{path.name} must not reference RequestOwnerIdentityProvider directly"
         )
+        # Non-chat.py request-path files must not reference identity modules at all.
+        if path.name != "chat.py":
+            assert "request_owner_identity" not in source, (
+                f"{path.name} must not reference request_owner_identity — "
+                "only chat.py may use the Phase 4B2 runtime wrapper"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -360,10 +376,11 @@ def test_no_secret_value_in_repository_files():
                 continue
             if "/" in token or "." in token:
                 continue
-            # All-hyphen separator lines (YAML comment decorators) are not secrets
+            # YAML/Python comment separator lines (e.g. # ----...) are not secrets.
             if set(token) <= {"-"}:
                 continue
-            # URL-safe base64 token of 56+ chars without slashes/dots is suspicious.
+            # URL-safe base64 (token_urlsafe output) has no padding '='
+            # but does contain only [A-Za-z0-9_-].  Flag it.
             assert False, (
                 f"Possible secret token found in {p.name}: token length={len(token)} "
                 f"(value deliberately not printed for security)"
