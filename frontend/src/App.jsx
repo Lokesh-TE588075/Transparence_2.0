@@ -48,6 +48,20 @@ export default function App() {
   // Step 3: Immediately mutable ref for race-safe async callbacks.
   const activeConvIdRef = useRef(_initialId);
 
+  // Step 4: Synchronous reset lock — prevents same-tick double invocation.
+  const resetInFlightRef = useRef(false);
+
+  // Step 7: Mounted guard — prevents state updates after component teardown.
+  // StrictMode-safe: explicitly re-set to true on mount, false on unmount.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
+  // Step 5/10: Defence-in-depth inactive conversation tracking.
+  const inactiveConvIdsRef = useRef(new Set());
+
   // Step 3: Single activation function — ref first, then reactive state.
   const activateConversation = useCallback((nextId) => {
     activeConvIdRef.current = nextId;
@@ -98,13 +112,16 @@ export default function App() {
         return;
       }
 
-      // Step 5/10: Mark old conversation inactive.
+      // Step 5/10: Mark old conversation inactive (defence-in-depth).
       markConversationInactive(inactiveConvIdsRef.current, oldConversationId);
 
-      // Success: generate new ID, activate, clear conversation UI (Step 8).
+      // Success: generate new ID, activate, REMOVE old from selectable list.
       const newId = _newConvId();
       const newConv = { id: newId, title: "New conversation", messages: [] };
-      setConversations(prev => [newConv, ...prev]);
+      setConversations(prev => [
+        newConv,
+        ...prev.filter(item => item.id !== oldConversationId),
+      ]);
       activateConversation(newId);
       setResetError(null);
     } finally {

@@ -65,7 +65,8 @@ async function simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef
     }
     markConversationInactive(inactiveSet, oldId);
     const newId = `new-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    conversationsState.set(p => [{ id: newId, title: "New conversation", messages: [] }, ...p]);
+    const newConv = { id: newId, title: "New conversation", messages: [] };
+    conversationsState.set(p => [newConv, ...p.filter(item => item.id !== oldId)]);
     activateConversation(newId);
     if (isMountedSafe(isMountedRef)) resetErrorState.set(null);
     return { success: true, newId, oldId };
@@ -173,5 +174,49 @@ describe("Phase 4C4B4: Frontend Conversation Reset (Production-Linked)", () => {
     assert.ok(src.includes('from "./utils/conversationResetLifecycle"'));
     assert.ok(src.includes("acquireResetLock"));
     assert.ok(src.includes("isMountedSafe"));
+  });
+  // =================================================================
+  // Step 3 Net-new: Old-conversation removal from selectable list
+  // =================================================================
+  it("44. Successful reset removes old ID from selectable list", async () => {
+    const r = await run();
+    const ids = conversationsState.get().map(c => c.id);
+    assert.ok(!ids.includes("conv-001"), "Old ID must not remain in list");
+  });
+  it("45. New ID appears exactly once after reset", async () => {
+    const r = await run();
+    const ids = conversationsState.get().map(c => c.id);
+    const count = ids.filter(id => id === r.newId).length;
+    assert.equal(count, 1, "New ID must appear exactly once");
+  });
+  it("46. Old ID cannot be reactivated via list", async () => {
+    await run();
+    const ids = conversationsState.get().map(c => c.id);
+    assert.ok(!ids.includes("conv-001"), "Old ID not in list, cannot be selected");
+    assert.equal(isConversationInactive(inactiveSet, "conv-001"), true);
+  });
+  it("47. Old ID cannot be used for message submission after removal", async () => {
+    await run();
+    // Old ID is gone from list AND fails response eligibility
+    assert.equal(isResponseEligible(activeConvIdRef, "conv-001"), false);
+    const ids = conversationsState.get().map(c => c.id);
+    assert.ok(!ids.includes("conv-001"));
+  });
+  it("48. Failure retains old conversation in list", async () => {
+    await run({ fetchMock: mockFetch(503) });
+    const ids = conversationsState.get().map(c => c.id);
+    assert.ok(ids.includes("conv-001"), "Old ID must remain on failure");
+  });
+  it("49. No conversation removed before reset HTTP 200", async () => {
+    let res;
+    const p = run({ fetchMock: async (u, o) => { fetchCalls.push({url:u,opts:o}); return new Promise(r => { res = r; }); } });
+    // While awaiting, old conversation must still be in list
+    const idsBeforeResolve = conversationsState.get().map(c => c.id);
+    assert.ok(idsBeforeResolve.includes("conv-001"), "Old ID must remain before HTTP 200");
+    res({ ok: true, status: 200 });
+    await p;
+    // After resolve, old conversation is removed
+    const idsAfterResolve = conversationsState.get().map(c => c.id);
+    assert.ok(!idsAfterResolve.includes("conv-001"), "Old ID removed after HTTP 200");
   });
 });

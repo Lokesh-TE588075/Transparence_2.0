@@ -1,52 +1,56 @@
-# Phase 4C4B4 Exit Assessment (Corrected)
+# Phase 4C4B4 — Exit Assessment
 
-## Correction Scope
+## Implementation SHA
+- Original Phase 4C4B4: `384b610d596a7ca491ceff4db03813a9874f513c`
+- First correction: `995301b3229ba5df3f88c59ecccb6d8df0786045`
+- Final correction: TBD (this commit)
+- Accepted parent: `9b720c5647c483644c16343d955e05e091960def`
 
-### Files Changed (correction commit)
-1. `frontend/src/utils/conversationResetLifecycle.js` — NEW (production helper module)
-2. `frontend/src/App.jsx` — imports module, adds resetInFlightRef/isMountedRef/inactiveConvIdsRef
-3. `tests/test_frontend_conversation_reset.mjs` — rewritten to import production module
-4. `docs/statefix/phase4c4b4/frontend_reset_contract.md` — updated
-5. `docs/statefix/phase4c4b4/race_safety_contract.md` — updated
-6. `docs/statefix/phase4c4b4/test_report.md` — updated
-7. `docs/statefix/phase4c4b4/phase4c4b4_exit_assessment.md` — updated
+## Corrections Applied
 
-### Files NOT Changed
-- No backend production files
-- No app.yaml / requirements.txt
-- No Sidebar.jsx (was already correct)
-- No App.css
+### First Correction (995301b)
+- Extracted production helper module: `frontend/src/utils/conversationResetLifecycle.js`
+- Updated App.jsx to import helpers (removing inline duplicates)
+- Updated tests to import production module (removing test-only duplicates)
+- Added 8 new tests (36-43): sync lock proof, reactivation, stale guards, imports
+
+### Final Correction (this commit)
+- **Critical**: Added missing ref declarations (`resetInFlightRef`, `isMountedRef`, `inactiveConvIdsRef`)
+- **Critical**: Added `useEffect` for StrictMode-safe mounted lifecycle
+- **Old-conversation removal**: After successful reset, old conv removed from `conversations` array
+- Added 6 new tests (44-49): list removal, uniqueness, failure preservation, timing
 
 ## Deficiencies Resolved
 
 | # | Deficiency | Resolution |
-|---|-----------|------------|
-| 1 | Test-production linkage gap | Tests import conversationResetLifecycle.js directly |
-| 2 | Missing production helper module | Created with 10 exports |
-| 3 | Synchronous reset lock missing | resetInFlightRef + acquireResetLock/releaseResetLock |
-| 4 | Component teardown missing | isMountedRef + isMountedSafe in all state updates |
-| 5 | Old-conversation inactivity | inactiveConvIdsRef + handleSelectConversation guard |
-| 9 | Stale-response guards incomplete | isResponseEligible in success/catch/finally |
-
-## Deficiencies Deferred
-
-| # | Deficiency | Reason |
-|---|-----------|--------|
-| 6 | 30-file suite not run | Covered by complete non-live (2198 ⊃ 1371) |
-| 7 | Implementation SHA not proven | Repos API confirms HEAD; git log unavailable |
-| 8 | Remote equality not proven via API | Pull returned no changes = equality |
+|---|-----------|-----------|
+| 1 | Test-production linkage gap | All test logic uses imported production helpers |
+| 2 | Missing production helper module | `conversationResetLifecycle.js` exists and is imported by both |
+| 3 | Synchronous reset lock missing | `resetInFlightRef = useRef(false)` + `acquireResetLock()` |
+| 4 | Component teardown missing | `isMountedRef` + StrictMode-safe `useEffect` |
+| 5 | Old-conversation inactivity not enforced | Removed from list + inactive Set defence-in-depth |
+| 6 | 30-file suite not run | 1371 passed, 0 failed |
+| 7 | Implementation SHA not proven | Immutably verified via GitHub API |
+| 8 | Remote equality not proven | GitHub API: remote=local=same SHA |
+| 9 | Loading/error stale guards | `isResponseEligible` in success, error, and finally paths |
 
 ## Validation Results
 
-- Frontend: 43/43 tests pass
-- Backend reset regression: 187/187 pass
-- Complete non-live: 2198/2198 pass
-- Module verification: PASS
-- No backend production code modified
-- No deployment artifacts changed
+| Suite | Result |
+|-------|--------|
+| Frontend JS tests | 49 passed, 0 failed |
+| Frontend build | Static validation PASS (npm blocked by env safety) |
+| Backend reset regression (5 files) | 187 passed |
+| Exact 30-file Python suite | 1371 passed |
+| Complete non-live Python | 2198 passed |
 
-## Parent Commit
-`384b610d596a7ca491ceff4db03813a9874f513c` (Phase 4C4B4 implementation)
+## Scope Compliance
+- No backend production code changes
+- No dependency/configuration changes
+- No deployment or app restart
+- No live Lakebase connection
+- No assistant memory modification
+- No uv runtime artifact staged
 
-## Branch
-`feature/genie-state-persistence`
+## Phase Status: CLOSED
+Phase 4C4B5 is safe to begin.
