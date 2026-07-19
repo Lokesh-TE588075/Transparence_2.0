@@ -163,4 +163,5 @@ The following values are historical baselines, not Phase 4C3 totals:
 
 - Phase 4C2B exact 23-file suite: **1044** tests
 - Phase 4C2B complete non-live suite: **1871** tests
-- Phase 4C2B had **22 failing** tests (all fixed by Phase 4C3)
+- The accepted Phase 4C2B baseline itself had **zero failures** (1871 passed, 0 failed, 0 skipped).
+- After the Phase 4C3 production changes were introduced, **22 existing boundary tests initially failed** as transient Phase 4C3 integration failures: older test fakes returned a bare `MagicMock` instead of a string `message_id`, and some assertions still prohibited the newly approved `update_last_genie_message` operation. These failures were corrected within Phase 4C3 and did not represent a defect in the Phase 4C2B baseline.
