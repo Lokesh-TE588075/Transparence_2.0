@@ -30,28 +30,48 @@
 8. **Fail-closed on unavailable** — DurableGenieSessionUnavailableError
    produces error response with fallback_recommended=False.
 
-## Production Files Modified
+9. **Chat argument contract tested behaviourally** — chat.py passes
+   frontend_conversation_id and owner_key correctly, proven by executing
+   chat() and capturing pipeline.run() arguments at runtime.
+
+## Production Files Modified (complete phase)
 
 - `app/services/genie_pipeline.py` — Added `_DurableLookupOutcome` enum,
-  refactored `_durable_session_lookup()` to return outcome, added
-  `_durable_recovered` flag to `_run_inner()`, protected recovered mapping
-  in Step 3 and shape retry.
+  `_DurableLookupUnavailableError` exception, refactored `_durable_session_lookup()`
+  to return outcome, added `_durable_recovered` flag to `_run_inner()`, protected
+  recovered mapping in Step 3 and shape retry, added `frontend_conversation_id`
+  kwarg to `run()`.
 - `app/routes/chat.py` — Passes `frontend_conversation_id=frontend_conversation_id`
   to `_genie_pl.run()`.
+
+## Test Files Changed (complete phase)
+
+- `tests/test_genie_pipeline_durable_lookup.py` — Created (36 tests)
+- `tests/test_chat_durable_lookup_key_plumbing.py` — Created (25 tests)
 
 ## What Was NOT Changed
 
 - `app/services/durable_genie_session_adapter.py` — Untouched.
 - `app/services/conversation_repository.py` — Untouched.
 - `app/services/durable_genie_session_runtime_factory.py` — Untouched.
+- `tests/test_durable_genie_session_adapter.py` — Untouched (Phase 3B).
+- `tests/test_genie_backend_durable_runtime_wiring.py` — Untouched (Phase 3C).
 - `app.yaml` — Untouched.
 - `requirements.txt` — Untouched.
 
 ## Test Results
 
 - Pipeline durable tests: 36 passed
-- Chat plumbing tests: 17 passed
-- Complete non-live suite: 1813 passed, 0 failed, 0 skipped
+- Chat plumbing tests: 25 passed
+- Phase 4C1+4C2A focused (7 files): 313 passed
+- Exact 22-file combined: 994 passed
+- Complete non-live suite: 1821 passed, 0 failed, 0 skipped
+
+## Commits
+
+1. `becff08bc3b1beac592c9722eb6224f2b0b43032` — Original Phase 4C2A
+2. `dbd9a32226967795248c67999dea9f3fc4da79b7` — Recovery corrective
+3. (This commit) — Chat behavioural test validation
 
 ## Phase 4C2B Status
 

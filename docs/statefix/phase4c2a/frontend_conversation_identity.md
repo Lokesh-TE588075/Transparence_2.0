@@ -43,3 +43,19 @@ genie_result = _genie_pl.run(
 - `owner_key` comes only from `_trusted_identity` (X-Forwarded-Access-Token → SP introspection).
 - Request body, legacy email header, Authorization header, and cookies cannot override it.
 - `chat.py` does not import or access the durable adapter or repository.
+
+## Behavioural Proof
+
+The chat argument contract is proven by executing `chat()` via `asyncio.run()`
+with a capturing pipeline stub.  Verified at runtime:
+
+- `app_conversation_id == "session-123:frontend-456"` (explicit ID)
+- `frontend_conversation_id == "frontend-456"` (explicit)
+- `frontend_conversation_id == "generated-frontend-789"` (generated)
+- `app_conversation_id == "session-123:generated-frontend-789"` (generated)
+- `response.conversation_id == frontend_conversation_id` (consistency)
+- `owner_key == identity.owner_user_id_hash` (trusted only)
+- Override attempts via body/headers/cookies are rejected.
+
+This is NOT proven by source inspection alone — actual `pipeline.run()` kwargs
+are captured during test execution.
