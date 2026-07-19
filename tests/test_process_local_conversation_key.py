@@ -597,3 +597,136 @@ class TestIsValidProcessLocalKey:
         assert is_valid_process_local_key("plc_v1_" + "0" * 64) is True
         assert is_valid_process_local_key("plc_v1_" + "f" * 64) is True
         assert is_valid_process_local_key("plc_v1_" + "0123456789abcdef" * 4) is True
+
+
+# ---------------------------------------------------------------------------
+# Validator parity — process-local helper vs DurableGenieSessionKey
+# ---------------------------------------------------------------------------
+
+
+class TestFrontendIDValidatorParity:
+    """Explicit contract-parity tests: process-local helper and
+    DurableGenieSessionKey must accept and reject the same representative
+    frontend conversation IDs.
+
+    BEHAVIOURAL NOTE — whitespace handling:
+    Both validators strip leading/trailing whitespace before their
+    accept/reject checks, so accept/reject parity is preserved for all
+    representative cases below.  However, DurableGenieSessionKey stores the
+    STRIPPED value as the durable key, while the process-local helper uses
+    the RAW (un-stripped) value in the SHA-256 digest.  This is a known,
+    accepted difference: it affects the resulting digest but NOT which inputs
+    are accepted or rejected.
+
+    CONTROL CHAR NOTE:
+    Neither DurableGenieSessionKey nor the process-local helper restricts
+    control characters in frontend_conversation_id.  This differs from
+    session_id, which DOES reject control characters.
+    """
+
+    def test_parity_plain_id_accepted(self):
+        """Plain identifier accepted by both contracts."""
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-plain-001",
+        )
+        assert is_valid_process_local_key(result)
+
+    def test_parity_leading_whitespace_accepted(self):
+        """Leading whitespace is accepted (stripped for validation, raw in digest).
+
+        DurableGenieSessionKey strips and stores the stripped value.
+        process_local helper strips for validation only; uses raw value in digest.
+        Both ACCEPT the input — accept/reject parity holds.
+        """
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-padded",
+        )
+        assert is_valid_process_local_key(result)
+
+    def test_parity_trailing_whitespace_accepted(self):
+        """Trailing whitespace is accepted by both contracts."""
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-padded  ",
+        )
+        assert is_valid_process_local_key(result)
+
+    def test_parity_empty_rejected(self):
+        """Empty string rejected by both contracts (confirms parity)."""
+        try:
+            build_process_local_conversation_key(
+                owner_user_id_hash=_VALID_OWNER,
+                session_id=_VALID_SESSION,
+                frontend_conversation_id="",
+            )
+            assert False, "Should have raised"
+        except ProcessLocalConversationKeyError:
+            pass
+
+    def test_parity_whitespace_only_rejected(self):
+        """Whitespace-only string rejected by both contracts (confirms parity)."""
+        try:
+            build_process_local_conversation_key(
+                owner_user_id_hash=_VALID_OWNER,
+                session_id=_VALID_SESSION,
+                frontend_conversation_id="   ",
+            )
+            assert False, "Should have raised"
+        except ProcessLocalConversationKeyError:
+            pass
+
+    def test_parity_at_sign_rejected(self):
+        """Email-like ID with @ rejected by both contracts (confirms parity)."""
+        try:
+            build_process_local_conversation_key(
+                owner_user_id_hash=_VALID_OWNER,
+                session_id=_VALID_SESSION,
+                frontend_conversation_id="user@example.com",
+            )
+            assert False, "Should have raised"
+        except ProcessLocalConversationKeyError:
+            pass
+
+    def test_parity_unicode_accepted(self):
+        """Unicode without @ accepted by both contracts."""
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="\u5bfe\u8a71-12345",
+        )
+        assert is_valid_process_local_key(result)
+
+    def test_parity_max_representative_valid_accepted(self):
+        """Very long frontend ID without @ accepted by both contracts.
+
+        Neither DurableGenieSessionKey nor process_local imposes a length cap
+        on frontend_conversation_id.
+        """
+        long_id = "conv-" + "x" * 500  # 505 chars, no @
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id=long_id,
+        )
+        assert is_valid_process_local_key(result)
+
+    def test_parity_control_char_in_frontend_accepted_by_both(self):
+        """Control characters in frontend_conversation_id are accepted by both
+        DurableGenieSessionKey and process_local helper.
+
+        Neither validator restricts control characters in the frontend ID.
+        (This differs from session_id, which rejects control characters.)
+        """
+        # \x01 SOH is a control char; neither validator blocks it in frontend ID
+        ctrl_frontend = "conv\x01id"
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id=ctrl_frontend,
+        )
+        assert is_valid_process_local_key(result)
