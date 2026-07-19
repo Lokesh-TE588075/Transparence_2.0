@@ -49,22 +49,57 @@ _MSG_INACTIVE      = "This conversation is no longer active. Start a new chat."
 
 ## Test Results
 
-### Focused suites (6 files)
+### Validation-environment prerequisites (transient)
+
+All counts below require `rapidfuzz` and `pytest-asyncio` to be installed in the transient
+environment. They are NOT committed to `requirements.txt`; they are test-environment dependencies
+only. Without them: `test_input_normalizer.py` fails (3 cases), async tests are skipped (36
+cases). With them all tests pass.
+
+### Focused suites (6 files) — authoritative pytest counts
 
 | Suite | Tests | Result |
 |---|---|---|
-| `test_genie_pipeline_inactive_durable_state.py` | 75 | ✅ PASS |
+| `test_genie_pipeline_inactive_durable_state.py` | **73** | ✅ PASS |
 | `test_genie_pipeline_durable_lookup.py` | 36 | ✅ PASS |
-| `test_genie_pipeline_durable_writeback.py` | 48 | ✅ PASS |
+| `test_genie_pipeline_durable_writeback.py` | **50** | ✅ PASS |
 | `test_genie_pipeline_last_message_persistence.py` | 57 | ✅ PASS |
 | `test_conversation_reset_coordinator.py` | 49 | ✅ PASS |
 | `test_genie_session_store.py` | 47 | ✅ PASS |
-| **Total** | **312** | **✅ PASS** |
+| **Total** | **312** | **✅ 312 passed, 0 failed, 0 skipped** |
 
-### Full non-live suite (excluding rapidfuzz-dependent and live tests)
+**Writeback count correction**: the original report stated 48. This was produced by a custom
+`python test_file.py` runner, which is not authoritative. `pytest --collect-only` returns 50
+collected test nodes. The implementation commit was not changed.
 
-- 1847 passed, 36 skipped, 3 pre-existing failures (`test_input_normalizer.py` — rapidfuzz not installed)
-- 0 new failures introduced by Phase 4C4B2
+**Inactive-state count correction**: the original report claimed 75. `pytest --collect-only`
+returns 73 collected test nodes. The difference is two parametrized cases that were present in
+the planning estimate but not in the written file. No behavioral contract is missing; all
+10 classes and all specified scenarios are present and passing. The coincidence 73+50=123 vs the
+claimed 75+48=123 means the focused-suite total is 312 in both cases.
+
+### Phase 4C2A/4C2B/4C3 regression
+
+| Suite | Tests |
+|---|---|
+| `test_genie_pipeline_durable_lookup.py` | 36 |
+| `test_chat_durable_lookup_key_plumbing.py` | 25 |
+| `test_genie_pipeline_durable_writeback.py` | 50 |
+| `test_genie_pipeline_last_message_persistence.py` | 57 |
+| **Total** | **168 passed, 0 failed, 0 skipped** |
+
+### Exact 26-file combined suite (Phase 4C4B1 25 files + new inactive file)
+
+- Phase 4C4B1 baseline: 1160 (25-file suite)
+- Phase 4C4B2 new file: +73
+- **Combined: 1233 passed, 0 failed, 0 skipped, 0 collection errors**
+
+### Complete non-live suite (excluding 4 live files)
+
+- Phase 4C4B1 baseline: 1987
+- Phase 4C4B2 new file: +73
+- **Total: 2060 passed, 0 failed, 0 skipped, 0 collection errors**
+- 1 Pydantic deprecation warning (pre-existing, not a test failure)
 
 ## Bugs Fixed During Testing
 

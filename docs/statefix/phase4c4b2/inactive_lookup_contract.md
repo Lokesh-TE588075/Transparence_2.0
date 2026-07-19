@@ -78,7 +78,21 @@ run()
 
 `GenieSessionStore.remove_session(app_conversation_id)` where
 `app_conversation_id = f"{session_id}:{frontend_conversation_id}"` is scoped
-to the current user's server-set session cookie. Different users with the same
-`frontend_conversation_id` have different `session_id` values and therefore
-different `app_conversation_id` keys. The remove is safe and does not affect
-other users' in-memory state.
+to the current server-set session cookie.
+
+### Current guarantees
+
+- **Separate browser sessions** (different httponly cookies) → different `session_id` values →
+  different `app_conversation_id` keys. `remove_session` does not affect a different browser
+  session.
+- **Durable records** are isolated through `owner_user_id_hash` (from `X-Forwarded-User`),
+  not through the session cookie.
+
+### Known gap (Phase 4C4B3 prerequisite)
+
+The session cookie is NOT bound to `owner_user_id_hash`. It is never rotated when
+`X-Forwarded-User` changes. If the same browser cookie is present for two different Databricks
+principals (e.g., shared machine without explicit logout), both would share the same
+process-local key. Phase 4C4B3 must introduce an owner-bound composite key:
+`owner_user_id_hash + ":" + session_id + ":" + frontend_conversation_id`
+or an equivalent server-side digest.
