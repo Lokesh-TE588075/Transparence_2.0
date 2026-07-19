@@ -17,13 +17,17 @@ Test cases:
     12. active_session_count excludes expired sessions.
 """
 
+import logging
+import logging.handlers
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-sys.path.insert(
-    0, "/Workspace/Users/lokesh.choraria@te.com/Transparence/transparence_app"
-)
+import os as _os
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+del _os, _REPO_ROOT
 
 from app.services.genie_session_store import GenieSessionStore, GenieSession
 
@@ -477,6 +481,180 @@ class TestActiveSessionCount:
 # STANDALONE RUNNER
 # =============================================================================
 
+# =============================================================================
+# TEST 13: remove_session physically removes the session object
+# =============================================================================
+
+
+class TestRemoveSession:
+    def test_remove_existing_session_returns_true(self):
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+        store.update_context(
+            APP_CONV_A,
+            last_intent="AGGREGATION",
+            last_entities=["US", "CN"],
+            last_user_prompt="show delayed shipments",
+        )
+
+        result = store.remove_session(APP_CONV_A)
+        assert result is True
+
+    def test_remove_makes_session_unreachable(self):
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+        store.set_last_message_id(APP_CONV_A, MSG_1)
+        store.update_context(
+            APP_CONV_A,
+            last_intent="AGGREGATION",
+            last_entities=["US"],
+            last_filters={"country": "US"},
+            last_user_prompt="delays by country",
+            last_enriched_prompt="Show aggregated delays",
+            last_download_key="dk-123",
+        )
+
+        store.remove_session(APP_CONV_A)
+
+        # All accessors return None/empty for a removed session
+        assert store.get_session(APP_CONV_A) is None
+        assert store.get_genie_conversation_id(APP_CONV_A) is None
+        assert store.get_last_message_id(APP_CONV_A) is None
+        assert store.get_last_download_key(APP_CONV_A) is None
+        assert store.get_context_snapshot(APP_CONV_A) == {}
+
+    def test_remove_physically_deletes_from_internal_mapping(self):
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+
+        store.remove_session(APP_CONV_A)
+
+        with store._lock:
+            assert APP_CONV_A not in store._sessions
+
+    def test_remove_missing_session_returns_false(self):
+        store = _store()
+        result = store.remove_session("non-existent-id")
+        assert result is False
+
+    def test_remove_missing_is_idempotent(self):
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+
+        first = store.remove_session(APP_CONV_A)
+        second = store.remove_session(APP_CONV_A)
+
+        assert first is True
+        assert second is False
+
+    def test_remove_does_not_affect_other_sessions(self):
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+        store.set_genie_conversation_id(APP_CONV_B, GENIE_CONV_B)
+
+        store.remove_session(APP_CONV_A)
+
+        # B remains intact
+        assert store.get_genie_conversation_id(APP_CONV_B) == GENIE_CONV_B
+        session_b = store.get_session(APP_CONV_B)
+        assert session_b is not None
+        assert session_b.genie_conversation_id == GENIE_CONV_B
+
+    def test_concurrent_remove_is_safe(self):
+        import threading
+
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+
+        results = []
+        barrier = threading.Barrier(4)
+
+        def _remove():
+            barrier.wait()
+            r = store.remove_session(APP_CONV_A)
+            results.append(r)
+
+        threads = [threading.Thread(target=_remove) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Exactly one True (the winner), rest False
+        assert results.count(True) == 1
+        assert results.count(False) == 3
+        assert store.get_session(APP_CONV_A) is None
+
+    def test_remove_context_heavy_session_is_complete(self):
+        """Context-heavy session is completely removed — no residual data."""
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+        store.set_last_message_id(APP_CONV_A, MSG_1)
+        from app.services.genie_session_store import TableExportRecord
+        store.update_context(
+            APP_CONV_A,
+            last_intent="BROAD_LISTING",
+            last_entities=["US", "CN", "DE"],
+            last_entity_type="country",
+            last_filters={"country": "US", "bu": "ION"},
+            last_user_prompt="show all shipments",
+            last_enriched_prompt="Show all active shipments from US and CN",
+            last_download_key="dk-heavy",
+            last_export_id="exp-001",
+            last_export_status="ready",
+            last_export_mode="returned_rows_only",
+            last_export_row_count=500,
+            last_table_headers=["tracking_id", "origin", "destination"],
+            last_row_count=50,
+            last_total_row_count=500,
+            last_returned_row_count=50,
+            latest_table_result=TableExportRecord(
+                assistant_message_id="msg-heavy",
+                download_key="dk-heavy",
+                export_id="exp-001",
+                export_status="ready",
+                export_mode="returned_rows_only",
+                export_row_count=500,
+                query_description="All shipments",
+                created_at=_now(),
+            ),
+        )
+
+        store.remove_session(APP_CONV_A)
+
+        # Verify complete removal
+        assert store.get_session(APP_CONV_A) is None
+        with store._lock:
+            assert APP_CONV_A not in store._sessions
+        assert store.session_count() == 0
+
+    def test_remove_empty_id_returns_false(self):
+        store = _store()
+        assert store.remove_session("") is False
+        assert store.remove_session("   ") is False
+
+    def test_no_identifier_logged_on_remove(self):
+        """Ensure remove_session does not log the conversation ID."""
+        import logging
+
+        store = _store()
+        store.set_genie_conversation_id(APP_CONV_A, GENIE_CONV_A)
+
+        handler = logging.handlers.MemoryHandler(capacity=100)
+        store_logger = logging.getLogger("app.services.genie_session_store")
+        store_logger.addHandler(handler)
+        store_logger.setLevel(logging.DEBUG)
+
+        try:
+            store.remove_session(APP_CONV_A)
+            handler.flush()
+            for record in handler.buffer:
+                msg = record.getMessage()
+                assert APP_CONV_A not in msg, f"ID leaked in log: {msg}"
+        finally:
+            store_logger.removeHandler(handler)
+
+
 if __name__ == "__main__":
     import traceback
 
@@ -493,6 +671,7 @@ if __name__ == "__main__":
         TestMissingSession,
         TestCleanupZero,
         TestActiveSessionCount,
+        TestRemoveSession,
     ]
 
     passed = failed = total = 0

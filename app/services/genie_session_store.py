@@ -301,6 +301,29 @@ class GenieSessionStore:
 
         return session
 
+    def remove_session(self, app_conversation_id: str) -> bool:
+        """Physically remove the entire session object from the store.
+
+        Unlike ``reset_session`` (which deactivates but retains the object),
+        this method completely deletes the GenieSession from the internal
+        mapping so that all former context becomes unreachable.
+
+        Returns
+        -------
+        bool
+            True when an entry existed and was removed.
+            False when no entry existed (idempotent; not an error).
+
+        Thread safety
+        -------------
+        Acquires the store lock for the duration of the removal.
+        """
+        if not app_conversation_id or not app_conversation_id.strip():
+            return False
+        with self._lock:
+            removed = self._sessions.pop(app_conversation_id, None)
+        return removed is not None
+
     def reset_session(self, app_conversation_id: str) -> None:
         """Deactivate and clear the Genie session for an app conversation."""
         with self._lock:

@@ -891,6 +891,7 @@ def test_adapter_not_imported_by_existing_runtime_modules() -> None:
     _APPROVED_IMPORTERS = {
         "app/services/durable_genie_session_runtime_factory.py",
         "app/services/genie_pipeline.py",  # Phase 4C2A: read-only durable lookup
+        "app/services/conversation_reset_coordinator.py",  # Phase 4C4B1: durable reset
     }
     app_root = pathlib.Path("app")
     offenders = []
