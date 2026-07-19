@@ -173,10 +173,25 @@ class _DurableLookupUnavailableError(Exception):
     """Internal-only exception for durable lookup failures.
 
     Raised when the durable Genie session lookup encounters a repository
-    unavailability or returns an unconfirmed degraded read.  Processing
+    unavailability or when no confirmed snapshot exists.  Processing
     MUST NOT proceed without confirmed durable state when durable mode
     is enabled.  Fallback to custom pipeline is prohibited.
     """
+
+
+class _DurableLookupOutcome:
+    """Request-local outcome of the durable session lookup.
+
+    Used to pass a clear signal from run() into _run_inner() without
+    storing anything on the pipeline instance.
+
+    DISABLED  — durable mode is off; no adapter access occurred.
+    MISS      — lookup executed, no recoverable record found.
+    RECOVERED — existing Genie conversation restored in session store.
+    """
+    DISABLED = "DISABLED"
+    MISS = "MISS"
+    RECOVERED = "RECOVERED"
 
 
 def _validate_owner_key(owner_key: object) -> None:
@@ -351,14 +366,15 @@ class GeniePipeline:
             # and frontend_conversation_id are present, perform exactly one
             # read-only lookup to recover an existing Genie conversation
             # mapping from the durable repository.
-            self._durable_session_lookup(
+            _lookup_outcome = self._durable_session_lookup(
                 owner_key=owner_key,
                 frontend_conversation_id=frontend_conversation_id,
                 app_conversation_id=app_conversation_id,
             )
 
             return self._run_inner(
-                user_message, app_conversation_id, start_time, execution_time_ms
+                user_message, app_conversation_id, start_time, execution_time_ms,
+                _durable_recovered=(_lookup_outcome == _DurableLookupOutcome.RECOVERED),
             )
 
         except GenieTimeoutError as exc:
@@ -436,12 +452,17 @@ class GeniePipeline:
         execution_time_ms: Optional[int],
         *,
         _is_shape_retry: bool = False,
+        _durable_recovered: bool = False,
     ) -> Dict[str, Any]:
         """Execute the full pipeline turn.  Raises on any failure.
 
         Args:
             _is_shape_retry: Internal flag — set True when this call is a
                 one-shot shape-validation retry.  Prevents recursive retrying.
+            _durable_recovered: Internal flag — set True when the durable
+                session lookup successfully recovered an existing Genie
+                conversation.  When True, the recovered mapping is authoritative
+                and must NOT be reset by local routing classification.
         """
 
         # -----------------------------------------------------------------
@@ -529,7 +550,10 @@ class GeniePipeline:
         # -----------------------------------------------------------------
         reuse_genie_context = (
             bool(genie_conv_id)
-            and route_decision.get("intent") == "TRUE_FOLLOW_UP"
+            and (
+                _durable_recovered
+                or route_decision.get("intent") == "TRUE_FOLLOW_UP"
+            )
         )
 
         if not reuse_genie_context and genie_conv_id is not None:
@@ -693,12 +717,17 @@ class GeniePipeline:
                     "GeniePipeline: shape_mismatch_retry intent=%s headers=%s app_conv=%s",
                     _current_intent, _sv_headers[:5], app_conversation_id,
                 )
-                # Reset Genie mapping so the retry starts a fresh conversation
-                self._store.reset_genie_mapping(app_conversation_id)
+                # Reset Genie mapping so the retry starts a fresh conversation —
+                # UNLESS this is a durably-recovered request, in which case the
+                # recovered mapping is authoritative and retries must continue
+                # through send_message on the same Genie conversation.
+                if not _durable_recovered:
+                    self._store.reset_genie_mapping(app_conversation_id)
                 # One-shot retry — _is_shape_retry=True prevents further recursion
                 return self._run_inner(
                     _retry_prompt, app_conversation_id, start_time, execution_time_ms,
                     _is_shape_retry=True,
+                    _durable_recovered=_durable_recovered,
                 )
 
         # -----------------------------------------------------------------
@@ -1284,10 +1313,15 @@ class GeniePipeline:
         owner_key: Optional[str],
         frontend_conversation_id: Optional[str],
         app_conversation_id: str,
-    ) -> None:
+    ) -> str:
         """Perform a read-only durable Genie session lookup.
 
-        When the durable runtime bundle is disabled, this is a no-op.
+        Returns a _DurableLookupOutcome value:
+          DISABLED  — durable mode off, no adapter access.
+          MISS      — lookup executed, no recoverable record found.
+          RECOVERED — existing Genie conversation restored in session store.
+
+        When the durable runtime bundle is disabled, returns DISABLED.
         When enabled, it requires both owner_key and frontend_conversation_id.
         On a successful hit, restores the Genie conversation mapping into the
         in-memory GenieSessionStore so that _run_inner() uses send_message
@@ -1298,7 +1332,7 @@ class GeniePipeline:
         # --- Gate 1: Is durable mode enabled? ---
         bundle = getattr(self, "_durable_session_runtime_bundle", None)
         if bundle is None or not getattr(bundle, "enabled", False):
-            return  # Disabled path: no access to adapter or repository.
+            return _DurableLookupOutcome.DISABLED
 
         # --- Gate 2: Prerequisites ---
         if owner_key is None:
@@ -1346,23 +1380,24 @@ class GeniePipeline:
 
         # --- Outcome A: No record found → new-conversation flow ---
         if result is None:
-            return
+            return _DurableLookupOutcome.MISS
 
-        # --- Outcome A.1: Reject unconfirmed degraded reads ---
-        if getattr(result, "degraded", False):
-            raise _DurableLookupUnavailableError(
-                "Durable session lookup returned an unconfirmed degraded read."
-            )
+        # --- Outcome A.1: Degraded-read policy ---
+        # Per adapter contract, degraded=True means the result came from an
+        # adapter-local snapshot that was PREVIOUSLY CONFIRMED by the repository.
+        # This is acceptable for recovery.  DurableGenieSessionUnavailableError
+        # (caught above) is the fail-closed path when NO confirmed snapshot
+        # exists.  Confirmed degraded reads are valid recovery sources.
 
         # --- Outcome A.2: Only recover ACTIVE records ---
         record = result.record
         if record.status != ConversationStatus.ACTIVE:
-            return  # Non-active: treat as "not found", new-conversation flow.
+            return _DurableLookupOutcome.MISS  # Non-active: new-conversation flow.
 
         # --- Outcome B: Active record with Genie conversation ID ---
         genie_conversation_id = record.genie_conversation_id
         if not genie_conversation_id:
-            return  # Bound but no Genie conversation yet: new-conversation flow.
+            return _DurableLookupOutcome.MISS  # Not yet bound: new-conversation flow.
 
         # --- Restore in-memory session mapping ---
         self._store.set_genie_conversation_id(
@@ -1372,6 +1407,7 @@ class GeniePipeline:
             self._store.set_last_message_id(
                 app_conversation_id, record.last_genie_message_id
             )
+        return _DurableLookupOutcome.RECOVERED
 
     def _build_durable_lookup_error_response(
         self,
