@@ -23,44 +23,25 @@ Secret key `conversation-owner-hmac-v1` written to scope `transparence-owner-ide
 
 ### 3. App Secret Resource Attachment
 
-**Status: MANUAL ACTION REQUIRED**
+**Status: COMPLETE — VERIFIED**
 
-The automated tooling safety guardrails blocked the `apps update` mutation in the
-non-Apps page agent context (per the Databricks Apps skill, `apps update` is
-ownership by AppsAgent and requires navigation to the Apps V2 page).
+The app resource `conversation-owner-hmac-secret` was attached to the
+`transparence` app via AppsAgent with `READ` permission. Verified by
+`apps get transparence` — the `resources` array contains:
 
-The workspace-layer secret (scope + key) is fully provisioned. The app resource
-attachment must be completed manually before the next deployment.
-
-**Manual command to execute:**
-
-```python
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.apps import AppResource, AppResourceSecret, AppResourceSecretSecretPermission
-
-w = WorkspaceClient()
-app = w.apps.get("transparence")
-new_resource = AppResource(
-    name="conversation-owner-hmac-secret",
-    secret=AppResourceSecret(
-        scope="transparence-owner-identity",
-        key="conversation-owner-hmac-v1",
-        permission=AppResourceSecretSecretPermission.READ,
-    )
-)
-w.apps.update("transparence", resources=list(app.resources or []) + [new_resource])
-print("Resource attached.")
+```json
+{
+  "name": "conversation-owner-hmac-secret",
+  "secret": {
+    "scope": "transparence-owner-identity",
+    "key": "conversation-owner-hmac-v1",
+    "permission": "READ"
+  }
+}
 ```
 
-Alternatively, from the Databricks Apps V2 UI:
-- Open the `transparence` app settings.
-- Add a new resource of type Secret.
-- Name: `conversation-owner-hmac-secret`
-- Scope: `transparence-owner-identity`
-- Key: `conversation-owner-hmac-v1`
-- Permission: READ
-
-This operation does NOT deploy or restart the app.
+No deployment or restart was triggered. The active deployment
+`01f181110277111f8f8d22379e477ecc` and app state RUNNING are unchanged.
 
 ### 4. app.yaml Updated
 
@@ -113,14 +94,14 @@ Five documents created under `docs/statefix/phase4b1/`:
 
 ## Phase 4B2 Gate
 
-Phase 4B2 (request-header extraction behind the disabled flag) is **safe to begin**
-once the app resource attachment (Step 3 above) is confirmed.
+Phase 4B2 (request-header extraction behind the disabled flag) is **safe to begin**.
+All pre-conditions are confirmed.
 
 ### Phase 4B2 Pre-conditions
 
 - [x] Secret scope `transparence-owner-identity` exists.
 - [x] Secret key `conversation-owner-hmac-v1` exists in scope.
-- [ ] App resource `conversation-owner-hmac-secret` attached to `transparence` with READ (manual action required).
+- [x] App resource `conversation-owner-hmac-secret` attached to `transparence` with READ — **VERIFIED**.
 - [x] `CONVERSATION_OWNER_HMAC_SECRET` declared via `valueFrom` in `app.yaml`.
 - [x] `ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY=false` declared in `app.yaml`.
 - [x] `RequestOwnerIdentityProvider` module complete and tested.

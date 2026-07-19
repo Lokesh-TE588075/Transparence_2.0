@@ -39,9 +39,11 @@ No other services or applications are granted access to this scope.
 |---|---|
 | Resource name | `conversation-owner-hmac-secret` |
 | Attached to app | `transparence` |
+| Attachment status | **VERIFIED** — confirmed via `apps get transparence` (2026-07-19) |
 | Permission | `READ` (read-only) |
 | Injected env var | `CONVERSATION_OWNER_HMAC_SECRET` |
 | Injection mechanism | `valueFrom: conversation-owner-hmac-secret` in `app.yaml` |
+| valueFrom resolvable | Yes — resource is now present in app configuration |
 
 The app service principal (SP ID `488a0acb-5804-42f0-98b1-a02cc13c4573`) is
 granted `READ` permission on the scope. Write and manage permissions are not

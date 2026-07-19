@@ -51,6 +51,7 @@ the Phase 4B1 expected configuration.
 |---|---|---|
 | Focused Phase 4B1 | `test_owner_identity_secret_configuration.py` | 24/24 passed |
 | Identity + Configuration | `test_request_owner_identity.py` + `test_owner_identity_secret_configuration.py` | 108/108 passed |
+| Combined Phase 4A+4B1 (16 files) | Persistence, composition, lifecycle, identity suites | 736/736 passed |
 | Complete non-live (excl. 4 smoke files) | All test files | 1563/1563 passed |
 
 **Zero failures. Zero skipped. Zero collection errors.**
