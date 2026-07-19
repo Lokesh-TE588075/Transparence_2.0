@@ -642,50 +642,18 @@ class TestMissingTombstone:
 
 
 class TestConflictHandling:
-    """Tests 23-30: Version conflict policy."""
+    """Tests 23-30: Version conflict policy.
 
-    def test_23_conflict_causes_one_reload(self):
-        bundle = _make_bundle()
-        adapter = _make_adapter(bundle)
-        store = GenieSessionStore()
-        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+    Correct conflict-path injection pattern:
+    1. Initial adapter.load(key) returns authoritative ACTIVE record.
+    2. Patched set_status mutates the real repo to a competing status,
+       then raises DurableGenieSessionVersionConflictError.
+    3. Coordinator calls adapter.load(key) exactly once after the conflict.
+    4. Reload returns the competing durable state.
+    """
 
-        key, record = _setup_active_record(adapter)
-
-        # Patch set_status to raise conflict, then mock reload to return RESET
-        original_set_status = adapter.set_status
-        original_load = adapter.load
-        load_count = [0]
-        set_status_count = [0]
-
-        def fake_set_status(k, status, **kwargs):
-            set_status_count[0] += 1
-            raise DurableGenieSessionVersionConflictError("conflict")
-
-        def counting_load(k):
-            load_count[0] += 1
-            return original_load(k)
-
-        adapter.set_status = fake_set_status
-
-        # First make the record RESET via direct repo so reload finds it
-        bundle.repository.set_status(
-            _VALID_OWNER, record.conversation_id,
-            ConversationStatus.RESET, expected_version=record.version,
-        )
-
-        adapter.load = counting_load
-        result = coord.reset(
-            owner_user_id_hash=_VALID_OWNER,
-            frontend_conversation_id=_VALID_FRONTEND_ID,
-        )
-
-        # Should have done exactly 1 reload (load_count includes initial load)
-        # Initial _authoritative_load + 1 reload = at most 2 total
-        assert load_count[0] <= 1  # Only the conflict reload counted here
-        assert result.success is True
-
-    def test_24_reload_reset_succeeds_idempotently(self):
+    def test_23_conflict_causes_exactly_one_reload_and_one_set_status(self):
+        """set_status called once; exactly one post-conflict reload; total loads = 2."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
@@ -694,97 +662,142 @@ class TestConflictHandling:
         key, record = _setup_active_record(adapter)
         store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-1")
 
-        # Race: another thread resets it
-        adapter.set_status(key, ConversationStatus.RESET, expected_version=record.version)
+        original_load = adapter.load
+        load_count = [0]
+        set_status_count = [0]
 
-        # Now the coordinator tries to reset — sees ACTIVE version 1 but
-        # set_status will conflict. Reload should show RESET.
-        # Re-create so coordinator sees initial state properly
-        bundle2 = _make_bundle()
-        adapter2 = _make_adapter(bundle2)
-        store2 = GenieSessionStore()
-        coord2 = ConversationResetCoordinator(adapter=adapter2, session_store=store2)
-
-        key2, rec2 = _setup_active_record(adapter2)
-        store2.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-1")
-
-        original_set_status = adapter2.set_status
-
-        def conflict_then_reload(k, status, **kwargs):
-            # Force conflict
+        def conflict_with_mutation(k, status, **kwargs):
+            set_status_count[0] += 1
+            # Simulate concurrent reset: mutate underlying repo to RESET
+            bundle.repository.set_status(
+                _VALID_OWNER, record.conversation_id,
+                ConversationStatus.RESET, expected_version=record.version,
+            )
             raise DurableGenieSessionVersionConflictError("conflict")
 
-        # Set the actual record to RESET first
-        adapter2.set_status(key2, ConversationStatus.RESET, expected_version=rec2.version)
+        def counting_load(k):
+            load_count[0] += 1
+            return original_load(k)
 
-        # Now patch set_status to always conflict (simulating race)
-        adapter2.set_status = conflict_then_reload
+        adapter.set_status = conflict_with_mutation
+        adapter.load = counting_load
 
-        # But load will return the real record (which is now RESET)
-        result = coord2.reset(
+        result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
         )
+
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
+        assert load_count[0] == 2  # initial load + one post-conflict reload
+        assert set_status_count[0] == 1  # no CAS retry
+
+    def test_24_reload_reset_succeeds_idempotently(self):
+        """Conflict → reload shows RESET → idempotent success, session removed."""
+        bundle = _make_bundle()
+        adapter = _make_adapter(bundle)
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+
+        key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+
+        original_load = adapter.load
+
+        def conflict_with_reset(k, status, **kwargs):
+            # Concurrent reset beats us
+            bundle.repository.set_status(
+                _VALID_OWNER, record.conversation_id,
+                ConversationStatus.RESET, expected_version=record.version,
+            )
+            raise DurableGenieSessionVersionConflictError("conflict")
+
+        adapter.set_status = conflict_with_reset
+
+        result = coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+        )
+
+        assert result.success is True
+        assert result.outcome == ResetOutcome.ALREADY_INACTIVE
+        # Local session removed
+        assert store.get_session(_VALID_FRONTEND_ID) is None
 
     def test_25_reload_stale_succeeds_idempotently(self):
+        """Conflict → reload shows STALE → idempotent success, session removed."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        # Make it STALE
-        adapter.set_status(key, ConversationStatus.STALE, expected_version=record.version)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-stale")
 
-        # Patch set_status to conflict (simulating seeing stale version)
-        def always_conflict(k, status, **kwargs):
+        def conflict_with_stale(k, status, **kwargs):
+            # Concurrent staleness-marker beats us
+            bundle.repository.set_status(
+                _VALID_OWNER, record.conversation_id,
+                ConversationStatus.STALE, expected_version=record.version,
+            )
             raise DurableGenieSessionVersionConflictError("conflict")
 
-        adapter.set_status = always_conflict
+        adapter.set_status = conflict_with_stale
 
-        # Reload finds STALE → idempotent success
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
         )
-        # Actually the coordinator loads first, sees STALE, returns ALREADY_INACTIVE
-        # without ever calling set_status. Let me adjust this test.
+
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
+        assert store.get_session(_VALID_FRONTEND_ID) is None
 
     def test_26_reload_expired_succeeds_idempotently(self):
-        bundle = _make_bundle()
-        adapter = _make_adapter(bundle)
-        store = GenieSessionStore()
-        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
-
-        key, _ = _setup_record_with_status(adapter, ConversationStatus.EXPIRED)
-
-        result = coord.reset(
-            owner_user_id_hash=_VALID_OWNER,
-            frontend_conversation_id=_VALID_FRONTEND_ID,
-        )
-        assert result.success is True
-        assert result.outcome == ResetOutcome.ALREADY_INACTIVE
-
-    def test_27_reload_active_returns_conflict(self):
-        """After conflict, if reload shows ACTIVE, return conflict."""
+        """Conflict → reload shows EXPIRED → idempotent success, session removed."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-exp")
 
-        # Patch set_status to always conflict
-        def always_conflict(k, status, **kwargs):
+        def conflict_with_expired(k, status, **kwargs):
+            # Concurrent expiry beats us
+            bundle.repository.set_status(
+                _VALID_OWNER, record.conversation_id,
+                ConversationStatus.EXPIRED, expected_version=record.version,
+            )
             raise DurableGenieSessionVersionConflictError("conflict")
 
-        adapter.set_status = always_conflict
+        adapter.set_status = conflict_with_expired
 
-        # Reload will still see ACTIVE → conflict error
+        result = coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+        )
+
+        assert result.success is True
+        assert result.outcome == ResetOutcome.ALREADY_INACTIVE
+        assert store.get_session(_VALID_FRONTEND_ID) is None
+
+    def test_27_reload_active_returns_conflict(self):
+        """Conflict → reload shows ACTIVE → conflict error, session retained."""
+        bundle = _make_bundle()
+        adapter = _make_adapter(bundle)
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+
+        key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+
+        # Patch set_status to conflict without changing state (remains ACTIVE)
+        def conflict_no_mutation(k, status, **kwargs):
+            raise DurableGenieSessionVersionConflictError("conflict")
+
+        adapter.set_status = conflict_no_mutation
+
         try:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
@@ -794,30 +807,32 @@ class TestConflictHandling:
         except ResetCoordinatorConflictError:
             pass
 
+        # Session retained
+        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+
     def test_28_reload_none_returns_conflict(self):
-        """After conflict, if reload returns None, return conflict."""
+        """Conflict → reload returns None → conflict error, session retained."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
 
         original_load = adapter.load
-        call_count = [0]
+        load_count = [0]
 
-        def always_conflict(k, status, **kwargs):
+        def conflict_no_mutation(k, status, **kwargs):
             raise DurableGenieSessionVersionConflictError("conflict")
 
         def load_none_on_reload(k):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # First load — return the real record
+            load_count[0] += 1
+            if load_count[0] == 1:
                 return original_load(k)
-            # Second load (after conflict) — return None
             return None
 
-        adapter.set_status = always_conflict
+        adapter.set_status = conflict_no_mutation
         adapter.load = load_none_on_reload
 
         try:
@@ -829,28 +844,32 @@ class TestConflictHandling:
         except ResetCoordinatorConflictError:
             pass
 
+        assert load_count[0] == 2  # initial + one reload
+        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+
     def test_29_reload_unavailable_returns_unavailable(self):
-        """After conflict, if reload is unavailable, return unavailable."""
+        """Conflict → reload unavailable → unavailable error, session retained."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
 
         original_load = adapter.load
-        call_count = [0]
+        load_count = [0]
 
-        def always_conflict(k, status, **kwargs):
+        def conflict_no_mutation(k, status, **kwargs):
             raise DurableGenieSessionVersionConflictError("conflict")
 
         def load_unavailable_on_reload(k):
-            call_count[0] += 1
-            if call_count[0] == 1:
+            load_count[0] += 1
+            if load_count[0] == 1:
                 return original_load(k)
             raise DurableGenieSessionUnavailableError("unavailable")
 
-        adapter.set_status = always_conflict
+        adapter.set_status = conflict_no_mutation
         adapter.load = load_unavailable_on_reload
 
         try:
@@ -862,8 +881,11 @@ class TestConflictHandling:
         except ResetCoordinatorUnavailableError:
             pass
 
+        assert load_count[0] == 2
+        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+
     def test_30_no_cas_retry_loop(self):
-        """set_status is called at most once (no retry loop)."""
+        """set_status called exactly once; no second CAS attempt."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
@@ -887,8 +909,8 @@ class TestConflictHandling:
         except (ResetCoordinatorConflictError, ResetCoordinatorUnavailableError):
             pass
 
-        # set_status called exactly once (no retry)
         assert set_status_count[0] == 1
+
 
 
 # =============================================================================
