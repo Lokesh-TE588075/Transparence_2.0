@@ -367,8 +367,8 @@ class TestEnabledPath:
 
         assert genie_calls[0]["msg"] == "show shipments"
 
-    # Test 20: identity is not passed to GeniePipeline yet
-    def test_identity_not_passed_to_genie_pipeline(self):
+    # Test 20: full identity object and raw fields not passed; only owner_key (Phase 4C1)
+    def test_identity_object_not_passed_to_genie_pipeline(self):
         identity = _make_identity()
         request = _make_request()
         body = _make_body()
@@ -397,9 +397,15 @@ class TestEnabledPath:
             asyncio.run(chat_mod.chat(request=request, body=body))
 
         if genie_kwargs:
+            # Phase 4C1: owner_key IS now passed (approved plumbing)
+            assert "owner_key" in genie_kwargs[0]
+            assert genie_kwargs[0]["owner_key"] == identity.owner_user_id_hash
+            # Full identity object and raw field names still NOT passed
             assert "owner_identity" not in genie_kwargs[0]
             assert "request_owner_identity" not in genie_kwargs[0]
             assert "owner_user_id_hash" not in genie_kwargs[0]
+            assert "audit_principal" not in genie_kwargs[0]
+            assert "source" not in genie_kwargs[0]
 
     # Test 21: durable adapter is not called
     def test_durable_adapter_not_called(self):

@@ -143,6 +143,33 @@ def _canonicalize_user_message(user_message: str) -> str:
 
 
 # =============================================================================
+# OWNER-KEY VALIDATION (Phase 4C1)
+# =============================================================================
+
+_OWNER_KEY_LENGTH = 64
+_OWNER_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+_MSG_INVALID_OWNER_KEY = (
+    "Internal error: request identity contract violation."
+)
+
+
+def _validate_owner_key(owner_key: object) -> None:
+    """Validate the structural contract of a trusted owner key."""
+    if not isinstance(owner_key, str):
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+    if owner_key != owner_key.strip():
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+    if not owner_key:
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+    if "@" in owner_key:
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+    if len(owner_key) != _OWNER_KEY_LENGTH:
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+    if not _OWNER_KEY_RE.match(owner_key):
+        raise ValueError(_MSG_INVALID_OWNER_KEY)
+
+
+# =============================================================================
 # PIPELINE
 # =============================================================================
 
@@ -246,6 +273,8 @@ class GeniePipeline:
         user_message: str,
         app_conversation_id: str,
         execution_time_ms: Optional[int] = None,
+        *,
+        owner_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute one turn of the Genie conversation.
 
@@ -263,6 +292,12 @@ class GeniePipeline:
                                     time (e.g. from the HTTP request), pass the
                                     elapsed ms here.  When None, the pipeline
                                     measures its own wall-clock time.
+            owner_key:              Optional trusted owner identity hash
+                                    (Phase 4C1).  When supplied, must be a
+                                    64-character lowercase hexadecimal string.
+                                    Validated structurally but not used in this
+                                    phase.  Reserved for Phase 4C2 durable-state
+                                    integration.
 
         Returns:
             ChatResponse-compatible dict.  Successful turns include
@@ -272,6 +307,14 @@ class GeniePipeline:
         start_time = time.monotonic()
 
         try:
+            # Phase 4C1: Structural validation of trusted owner key.
+            # The key is request-local only; it is NOT stored on the pipeline
+            # instance, NOT logged, NOT passed to Genie, NOT included in
+            # session state, and NOT used for any durable operation in this
+            # phase.  Validation precedes any Genie interaction.
+            if owner_key is not None:
+                _validate_owner_key(owner_key)
+
             return self._run_inner(
                 user_message, app_conversation_id, start_time, execution_time_ms
             )

@@ -510,8 +510,14 @@ class TestIntegrationBoundaries:
 
     def test_no_request_path_uses_derived_owner_identity(self):
         source = _asset_source("app/routes/chat.py")
-        assert "owner_user_id_hash" not in source
+        # Phase 4C1: chat.py now reads owner_user_id_hash from the resolved
+        # identity to pass as owner_key into GeniePipeline.  This is approved
+        # plumbing.  The following constraints remain enforced:
         assert "RequestOwnerIdentityProvider" not in source
+        # Must not derive the identity itself (no provider construction):
+        assert "create_request_owner_identity_provider" not in source
+        # Must not import or call the HMAC settings directly:
+        assert "RequestOwnerIdentitySettings" not in source
 
     def test_no_fallback_identity_exists_in_module(self):
         source = _module_source()

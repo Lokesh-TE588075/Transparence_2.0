@@ -268,9 +268,19 @@ async def chat(request: Request, body: ChatRequest):
                 # CAN USE on the Genie Space (see ops runbook).
                 # Broader OAuth scopes can be added in G10 for user-delegated auth.
                 _genie_pl  = _get_genie_pipeline(user_token=None)
+
+                # Phase 4C1: Pass trusted owner key into pipeline boundary.
+                # When identity is disabled _trusted_identity is None; pass None.
+                _owner_key = (
+                    _trusted_identity.owner_user_id_hash
+                    if _trusted_identity is not None
+                    else None
+                )
+
                 genie_result = _genie_pl.run(
                     user_message=user_message,
                     app_conversation_id=server_conversation_key,
+                    owner_key=_owner_key,
                 )
 
                 if not genie_result.get("fallback_recommended", False):
