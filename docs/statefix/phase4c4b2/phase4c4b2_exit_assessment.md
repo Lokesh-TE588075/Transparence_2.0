@@ -56,7 +56,7 @@ Updated 3 tests to reflect fail-closed behaviour for degraded and non-ACTIVE loo
 | Commit | SHA | Description |
 |---|---|---|
 | Implementation | `de522cea9099f73336a730a2c6313d711d028492` | Block inactive durable conversations in pipeline |
-| Validation correction | `6bedf7ffb1aad5728644df19696eec68a0ae617d` | Correct Phase 4C4B2 validation and owner-scope assessment |
+| Validation correction | `0c5236c3a841c02badd2ecf6937e73dd123321b1` (HEAD) | Correct Phase 4C4B2 validation and owner-scope assessment |
 
 ## Test Results Summary (authoritative — corrected)
 
