@@ -48,3 +48,6 @@ baseline_backups/
 # Databricks generated
 .databricks/
 
+# Databricks serverless runtime artifact (auto-created by the executor environment).
+# Not a project file.  Prevent accidental staging after runtime recreates it.
+/uv
