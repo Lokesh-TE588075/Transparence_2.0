@@ -21,7 +21,7 @@ Protection to the Genie pipeline. It is the second sub-phase of Phase 4C4B
 9. **TOCTOU gate in `_persist_new_durable_conversation`** (lines 1860–1875): rejects degraded and non-ACTIVE `get_or_create` results.
 10. **`_DurableInactiveConversationError` handler** (lines ~1706–1715): tombstone-race path uses `remove_session` + `_build_inactive_response`.
 
-### `tests/test_genie_pipeline_inactive_durable_state.py` (new, 75 tests)
+### `tests/test_genie_pipeline_inactive_durable_state.py` (new, 73 tests (pytest authoritative))
 
 Comprehensive test coverage for all INACTIVE and tombstone-race paths.
 
@@ -56,7 +56,7 @@ Updated 3 tests to reflect fail-closed behaviour for degraded and non-ACTIVE loo
 | Commit | SHA | Description |
 |---|---|---|
 | Implementation | `de522cea9099f73336a730a2c6313d711d028492` | Block inactive durable conversations in pipeline |
-| Validation correction | *(set after correction commit pushed)* | Correct Phase 4C4B2 validation and owner-scope assessment |
+| Validation correction | `6bedf7ffb1aad5728644df19696eec68a0ae617d` | Correct Phase 4C4B2 validation and owner-scope assessment |
 
 ## Test Results Summary (authoritative — corrected)
 

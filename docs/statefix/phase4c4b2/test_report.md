@@ -2,22 +2,27 @@
 
 ## New Test File
 
-`tests/test_genie_pipeline_inactive_durable_state.py` — 75 tests
+`tests/test_genie_pipeline_inactive_durable_state.py` — **73 tests** (authoritative pytest count)
 
-### Test Classes
+**Note on count discrepancy**: the original implementation report claimed 75. That figure was
+derived from a planning estimate, not from `pytest --collect-only`. The authoritative pytest
+collection returns 73 tests. The difference is in parametrize case counts; all 10 test classes
+and all specified behavioral contracts are fully present and passing.
 
-| Class | Tests | Coverage |
+### Test Classes (pytest-collected case counts)
+
+| Class | Cases | Coverage |
 |---|---|---|
-| `TestInactiveLookupOutcome` | 5 | ACTIVE→RECOVERED, no record→MISS, RESET/STALE/EXPIRED→INACTIVE |
-| `TestInactiveNoGenieExecution` | 6 | start_conversation not called, send_message not called, get_or_create not called, fallback_recommended=False |
-| `TestInactiveProhibitedAdapterOperations` | 5 | bind, update_last_genie_message, touch, set_status, delete all prohibited for INACTIVE |
-| `TestInactiveStaticResponse` | 2 | message=_MSG_INACTIVE, all ChatResponse fields present, no identifier leakage |
-| `TestInactiveProcessLocalCleanup` | 3 | current session removed, other sessions untouched, no-entry idempotent |
-| `TestDegradedLookupFailsClosed` | 5 | degraded ACTIVE/RESET fails closed, sanitized response, adapter unavailable fails closed |
-| `TestTombstoneRaceWriteback` | 8 | RESET/STALE/EXPIRED tombstone after MISS, bind never called, no fallback, static response, session cleared, repo record preserved |
+| `TestInactiveLookupOutcome` | 5 | ACTIVE→RECOVERED, no record→MISS, RESET/STALE/EXPIRED→INACTIVE (×3 param) |
+| `TestInactiveNoGenieExecution` | 12 | 4 behaviors × 3 statuses: start_conversation, send_message, get_or_create, custom_fallback not called |
+| `TestInactiveProhibitedAdapterOperations` | 15 | 5 adapter ops × 3 statuses: bind, update_last_message, touch, set_status, delete all prohibited |
+| `TestInactiveStaticResponse` | 9 | 3 assertions × 3 statuses: static message, fallback_recommended=False, required fields |
+| `TestInactiveProcessLocalCleanup` | 8 | current session removed (×3), other sessions untouched (×3), owner isolated, no-entry idempotent |
+| `TestDegradedLookupFailsClosed` | 6 | degraded ACTIVE, degraded INACTIVE, degraded STALE/EXPIRED (×2), sanitized response, adapter unavailable |
+| `TestTombstoneRaceWriteback` | 7 | RESET/STALE/EXPIRED tombstone blocks bind, no fallback, static response, session cleared, repo record preserved |
 | `TestGetOrCreateDegradedAndUnavailable` | 3 | degraded ACTIVE/RESET fails closed, unavailable fails closed |
 | `TestActiveMissPathRetained` | 2 | authoritative ACTIVE get_or_create still proceeds (regression), MISS without bundle unaffected |
-| `TestNoIdentifierLeakage` | 3 | owner hash, frontend ID, Genie IDs absent from response and message |
+| `TestNoIdentifierLeakage` | 6 | owner hash absent (×3), status value absent (×3) |
 
 ### Constants Used
 
