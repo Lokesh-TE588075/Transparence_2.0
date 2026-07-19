@@ -89,7 +89,7 @@ tool binaries, downloaded installers, archives, or generated credentials.
   Message: `Bind process-local conversations to trusted owner`
 - **Validation-correction commit**: `638d899dd36276db25890816f3605ddedbc53d33`
   Message: `Correct Phase 4C4B3A contract and validation`
-- **Canonicalization and cleanup commit**: TBD after commit in Step 12
+- **Canonicalization and cleanup commit**: `35f86562989bff2a891b82cb6c36ab7cc2d9eda0`
   Message: `Correct Phase 4C4B3A canonicalization and cleanup`
 
 ## Test Results
