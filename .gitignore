@@ -47,3 +47,6 @@ baseline_backups/
 
 # Databricks generated
 .databricks/
+
+# Tool binaries (not project files)
+/uv
