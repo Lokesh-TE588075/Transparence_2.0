@@ -1,14 +1,14 @@
 import React from "react";
 
-export default function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, isOpen }) {
+export default function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, isOpen, isResetting }) {
   return (
     <aside className={`sidebar ${isOpen ? "open" : "closed"}`}>
       <div className="sidebar-top">
-        <button className="new-chat-btn" onClick={onNew}>
+        <button className="new-chat-btn" onClick={onNew} disabled={isResetting}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <path d="M12 5v14M5 12h14"/>
           </svg>
-          New Chat
+          {isResetting ? "Resetting…" : "New Chat"}
         </button>
       </div>
 

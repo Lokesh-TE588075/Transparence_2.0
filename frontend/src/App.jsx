@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import ChatWindow from "./components/ChatWindow";
@@ -16,6 +16,25 @@ function _newConvId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Sanitized error messages for reset failures (Step 7).
+const RESET_ERROR_MESSAGES = {
+  400: "The current conversation could not be reset.",
+  401: "Your session could not be verified. Please refresh and try again.",
+  409: "The conversation could not be reset because it changed. Please try again.",
+  503: "Conversation reset is temporarily unavailable. Please try again.",
+  network: "Conversation reset is temporarily unavailable. Please try again.",
+};
+
+// Call the backend reset endpoint (Step 6).
+async function resetConversation(frontendConversationId) {
+  const encoded = encodeURIComponent(frontendConversationId);
+  const response = await fetch(`/api/conversations/${encoded}/reset`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  return response;
+}
+
 export default function App() {
   const _initialId = _newConvId();
   const [conversations, setConversations] = useState([
@@ -23,18 +42,67 @@ export default function App() {
   ]);
   const [activeConvId, setActiveConvId] = useState(_initialId);
   const [isLoading, setIsLoading] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
 
+  // Step 3: Immediately mutable ref for race-safe async callbacks.
+  const activeConvIdRef = useRef(_initialId);
+
+  // Step 3: Single activation function — ref first, then reactive state.
+  const activateConversation = useCallback((nextId) => {
+    activeConvIdRef.current = nextId;
+    setActiveConvId(nextId);
+  }, []);
+
   const activeConv = conversations.find(c => c.id === activeConvId) || conversations[0];
 
-  const handleNewChat = () => {
-    const id = _newConvId();
-    const newConv = { id, title: "New conversation", messages: [] };
-    setConversations(prev => [newConv, ...prev]);
-    setActiveConvId(id);
-  };
+  // Step 5: Reset-first New Chat flow.
+  const handleNewChat = useCallback(async () => {
+    if (isResetting) return;
+
+    const oldConversationId = activeConvIdRef.current;
+
+    // If no active conversation exists (fresh app, edge case), just create one.
+    if (!oldConversationId) {
+      const id = _newConvId();
+      const newConv = { id, title: "New conversation", messages: [] };
+      setConversations(prev => [newConv, ...prev]);
+      activateConversation(id);
+      return;
+    }
+
+    setIsResetting(true);
+    setResetError(null);
+
+    try {
+      let response;
+      try {
+        response = await resetConversation(oldConversationId);
+      } catch (_networkErr) {
+        // Network failure — retain existing conversation.
+        setResetError(RESET_ERROR_MESSAGES.network);
+        return;
+      }
+
+      if (!response.ok) {
+        const msg = RESET_ERROR_MESSAGES[response.status] || RESET_ERROR_MESSAGES.network;
+        setResetError(msg);
+        return;
+      }
+
+      // Success: generate new ID, activate, clear conversation UI (Step 8).
+      const newId = _newConvId();
+      const newConv = { id: newId, title: "New conversation", messages: [] };
+      setConversations(prev => [newConv, ...prev]);
+      activateConversation(newId);
+      setResetError(null);
+    } finally {
+      setIsResetting(false);
+    }
+  }, [isResetting, activateConversation]);
 
   const handleDeleteConversation = (id) => {
     setConversations(prev => {
@@ -49,22 +117,34 @@ export default function App() {
     });
   };
 
+  // Step 9D: Block message submission while resetting.
   const handleSendMessage = async (text) => {
-    if (!text.trim() || isLoading) return;
+    if (!text.trim() || isLoading || isResetting) return;
+
+    // Step 3: Capture active conversation ID at request time.
+    const requestConversationId = activeConvIdRef.current;
 
     const userMsg = { id: Date.now(), role: "user", content: text, timestamp: new Date() };
     setConversations(prev => prev.map(c =>
-      c.id === activeConvId ? { ...c, messages: [...c.messages, userMsg] } : c
+      c.id === requestConversationId ? { ...c, messages: [...c.messages, userMsg] } : c
     ));
     setIsLoading(true);
+    // Clear any previous reset error on new send.
+    setResetError(null);
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, conversation_id: activeConvId }),
+        body: JSON.stringify({ message: text, conversation_id: requestConversationId }),
       });
       const data = await res.json();
+
+      // Step 3 + Step 9: Guard — only update if this conversation is still active.
+      if (activeConvIdRef.current !== requestConversationId) {
+        // Late response from old conversation — discard silently.
+        return;
+      }
 
       const botMsg = {
         id: Date.now() + 1, role: "assistant", content: data.message,
@@ -97,7 +177,7 @@ export default function App() {
       };
 
       setConversations(prev => prev.map(c => {
-        if (c.id !== activeConvId) return c;
+        if (c.id !== requestConversationId) return c;
         const updated = { ...c, messages: [...c.messages, botMsg] };
         if (c.messages.length === 0 || c.title === "New conversation") {
           updated.title = text.slice(0, 35) + (text.length > 35 ? "..." : "");
@@ -105,12 +185,18 @@ export default function App() {
         return updated;
       }));
     } catch (err) {
-      const errMsg = { id: Date.now() + 1, role: "assistant", content: "I\'m having trouble connecting. Please try again in a moment.", status: "error", timestamp: new Date() };
+      // Step 9B: Guard on error path too.
+      if (activeConvIdRef.current !== requestConversationId) return;
+
+      const errMsg = { id: Date.now() + 1, role: "assistant", content: "I'm having trouble connecting. Please try again in a moment.", status: "error", timestamp: new Date() };
       setConversations(prev => prev.map(c =>
-        c.id === activeConvId ? { ...c, messages: [...c.messages, errMsg] } : c
+        c.id === requestConversationId ? { ...c, messages: [...c.messages, errMsg] } : c
       ));
     } finally {
-      setIsLoading(false);
+      // Step 9: Only clear loading if this conversation is still active.
+      if (activeConvIdRef.current === requestConversationId) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -144,11 +230,23 @@ export default function App() {
           onNew={handleNewChat}
           onDelete={handleDeleteConversation}
           isOpen={sidebarOpen}
+          isResetting={isResetting}
         />
         <main className={`main-content ${sidebarOpen ? "" : "expanded"}`}>
+          {resetError && (
+            <div className="reset-error-banner" role="alert">
+              <span>{resetError}</span>
+              <button onClick={() => setResetError(null)} aria-label="Dismiss error">&times;</button>
+            </div>
+          )}
+          {isResetting && (
+            <div className="resetting-indicator" role="status" aria-live="polite">
+              Resetting conversation…
+            </div>
+          )}
           <ChatWindow
             conversation={activeConv}
-            isLoading={isLoading}
+            isLoading={isLoading || isResetting}
             onSend={handleSendMessage}
             onFeedback={handleFeedback}
           />
