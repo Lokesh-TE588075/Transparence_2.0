@@ -36,4 +36,4 @@
 |---|---|---|
 | Complete non-live | 1871 (22 failing) | 1928 (0 failing) |
 | Phase 4C3 focused | — | 57 |
-| 4C2A + 4C2B + 4C3 | — | 143 |
+| 4C2A + 4C2B + 4C3 (36+25+50+57) | — | 168 |

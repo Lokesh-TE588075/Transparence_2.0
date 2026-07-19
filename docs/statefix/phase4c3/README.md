@@ -46,5 +46,5 @@ an error response is returned, and `fallback_recommended=False`.
 | Suite | Count | Result |
 |---|---|---|
 | Phase 4C3 focused | 57 | All pass |
-| 4C2A + 4C2B + 4C3 combined | 143 | All pass |
+| 4C2A + 4C2B + 4C3 combined (36+25+50+57) | 168 | All pass |
 | Complete non-live | 1928 | All pass, 0 failures |
