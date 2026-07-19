@@ -609,14 +609,13 @@ class TestFrontendIDValidatorParity:
     DurableGenieSessionKey must accept and reject the same representative
     frontend conversation IDs.
 
-    BEHAVIOURAL NOTE — whitespace handling:
-    Both validators strip leading/trailing whitespace before their
-    accept/reject checks, so accept/reject parity is preserved for all
-    representative cases below.  However, DurableGenieSessionKey stores the
-    STRIPPED value as the durable key, while the process-local helper uses
-    the RAW (un-stripped) value in the SHA-256 digest.  This is a known,
-    accepted difference: it affects the resulting digest but NOT which inputs
-    are accepted or rejected.
+    CANONICALIZATION CONTRACT (Phase 4C4B3A correction):
+    Both the process-local helper and DurableGenieSessionKey apply strip()
+    to the frontend conversation ID before use.  DurableGenieSessionKey stores
+    the stripped value as the durable key; the process-local helper also uses
+    the stripped canonical value in the SHA-256 digest.  This alignment
+    ensures whitespace variants of the same ID map to the same process-local
+    key and therefore refer to the same durable logical conversation.
 
     CONTROL CHAR NOTE:
     Neither DurableGenieSessionKey nor the process-local helper restricts
@@ -634,11 +633,10 @@ class TestFrontendIDValidatorParity:
         assert is_valid_process_local_key(result)
 
     def test_parity_leading_whitespace_accepted(self):
-        """Leading whitespace is accepted (stripped for validation, raw in digest).
+        """Leading whitespace is accepted by both contracts.
 
-        DurableGenieSessionKey strips and stores the stripped value.
-        process_local helper strips for validation only; uses raw value in digest.
-        Both ACCEPT the input — accept/reject parity holds.
+        Both DurableGenieSessionKey and the process-local helper strip and use
+        the canonical (stripped) value.  Accept/reject parity holds.
         """
         result = build_process_local_conversation_key(
             owner_user_id_hash=_VALID_OWNER,
@@ -730,3 +728,130 @@ class TestFrontendIDValidatorParity:
             frontend_conversation_id=ctrl_frontend,
         )
         assert is_valid_process_local_key(result)
+
+
+# ---------------------------------------------------------------------------
+# Canonicalization parity — process-local key aligns with durable logical key
+# ---------------------------------------------------------------------------
+
+
+class TestFrontendIDCanonicalization:
+    """Explicit canonicalization contract tests.
+
+    After Phase 4C4B3A correction, frontend_conversation_id is canonicalized
+    with strip() before hashing — matching the DurableGenieSessionKey contract
+    which strips and stores the canonical value.  This ensures whitespace
+    variants of the same frontend conversation ID map to the same process-local
+    key and therefore refer to the same durable logical conversation.
+
+    No adapter runtime import is required or permitted.
+    """
+
+    def test_canonical_leading_whitespace_same_key(self):
+        """Leading whitespace variant produces the same key as the plain ID."""
+        k_plain = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-canonical-001",
+        )
+        k_leading = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-canonical-001",
+        )
+        assert k_plain == k_leading
+
+    def test_canonical_trailing_whitespace_same_key(self):
+        """Trailing whitespace variant produces the same key as the plain ID."""
+        k_plain = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-canonical-001",
+        )
+        k_trailing = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-canonical-001  ",
+        )
+        assert k_plain == k_trailing
+
+    def test_canonical_both_ends_whitespace_same_key(self):
+        """Whitespace on both ends produces the same key as the plain ID."""
+        k_plain = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-canonical-001",
+        )
+        k_both = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-canonical-001  ",
+        )
+        assert k_plain == k_both
+
+    def test_canonical_digest_matches_durable_key_logical(self):
+        """Canonical digest aligns with the durable key's stored frontend ID.
+
+        DurableGenieSessionKey stores strip(frontend_id) as the durable key.
+        build_process_local_conversation_key() uses the same stripped value in
+        the digest.  Proved by showing plain and padded variants produce the
+        same key — since both have the same canonical (stripped) value.
+        """
+        k_plain = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="conv-durable-align-001",
+        )
+        k_padded = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-durable-align-001  ",
+        )
+        assert k_plain == k_padded
+
+    def test_canonical_different_canonical_ids_different_keys(self):
+        """Different canonical (stripped) IDs still produce different keys."""
+        k_alpha = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-alpha  ",
+        )
+        k_beta = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id="  conv-beta  ",
+        )
+        assert k_alpha != k_beta
+
+    def test_canonical_unicode_with_whitespace_same_key(self):
+        """Unicode frontend ID with surrounding whitespace produces same key
+        after canonicalization as the plain (unpadded) Unicode ID."""
+        unicode_plain = "\u5bfe\u8a71-canonical-001"
+        unicode_padded = "  \u5bfe\u8a71-canonical-001  "
+        k_plain = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id=unicode_plain,
+        )
+        k_padded = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id=unicode_padded,
+        )
+        assert k_plain == k_padded
+
+    def test_canonical_existing_vector_unchanged(self):
+        """Known digest vector is unchanged by canonicalization fix.
+
+        The vector uses a plain frontend ID with no surrounding whitespace,
+        so strip() is a no-op and the digest is identical to the original.
+        """
+        result = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_OWNER,
+            session_id=_VALID_SESSION,
+            frontend_conversation_id=_VALID_FRONTEND,
+        )
+        assert result == _EXPECTED_VECTOR_1, (
+            f"Canonicalization changed a plain-ID digest vector. "
+            f"Got {result!r}, expected {_EXPECTED_VECTOR_1!r}"
+        )

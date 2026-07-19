@@ -13,7 +13,7 @@ cookie cannot collide in in-process state.
 | `app/services/process_local_conversation_key.py` (new) | DONE |
 | `app/routes/chat.py` (updated) | DONE |
 | `app/services/conversation_reset_coordinator.py` (updated) | DONE |
-| `tests/test_process_local_conversation_key.py` (new, 47 tests) | DONE |
+| `tests/test_process_local_conversation_key.py` (new, 54 tests) | DONE |
 | `tests/test_chat_owner_scoped_local_key.py` (new, 21 tests) | DONE |
 | `tests/test_conversation_reset_coordinator.py` (updated, 63 tests) | DONE |
 | `tests/test_chat_owner_key_plumbing.py` (updated) | DONE |
@@ -29,6 +29,7 @@ cookie cannot collide in in-process state.
 - Durable repository continues to use raw `owner_user_id_hash` + `frontend_conversation_id`
 - Legacy disabled path (identity resolver returns None) still uses `session:id` format
 - `ProcessLocalConversationKeyError` opaque — no raw inputs exposed in repr or logs
+- `frontend_conversation_id` canonicalized with `strip()` before hashing — aligned with `DurableGenieSessionKey` contract
 - `process_local_conversation_key` is a **mandatory argument** to `reset()` — no default, no None fallback
 - No `assistant_instructions` change within the repository
 
@@ -68,12 +69,28 @@ restarts is:
 No additional Delta serialization of the process-local `GenieSessionStore` is
 required or planned for the accepted recovery contract.
 
+
+## Artifact Cleanup
+
+An accidental binary artifact (`uv` — bash wrapper script for the uv package manager,
+279 bytes, tracked in two commits after the validation-correction commit) was discovered
+and removed:
+
+- `uv` deleted from the repository working directory and git tracking.
+- `.gitignore` entry `/uv` (added only to compensate for the accidental commit) was
+  reverted.  The `.gitignore` is restored to its exact Phase 4C4B2-parent content.
+
+The final Phase 4C4B3A diff from Phase 4C4B2 parent contains no binary artifacts,
+tool binaries, downloaded installers, archives, or generated credentials.
+
 ## Commits
 
 - **Implementation commit**: `33f4f60fa35466cf8bbe4bb08cd69b9288c3a482`
   Message: `Bind process-local conversations to trusted owner`
 - **Validation-correction commit**: `638d899dd36276db25890816f3605ddedbc53d33`
   Message: `Correct Phase 4C4B3A contract and validation`
+- **Canonicalization and cleanup commit**: TBD after commit in Step 12
+  Message: `Correct Phase 4C4B3A canonicalization and cleanup`
 
 ## Test Results
 
@@ -92,7 +109,7 @@ required or planned for the accepted recovery contract.
 | `test_genie_pipeline_durable_lookup.py` | 36 |
 | `test_genie_pipeline_durable_writeback.py` | 50 |
 | `test_genie_pipeline_last_message_persistence.py` | 57 |
-| **Total focused** | **505 passed, 0 failed, 0 skipped** |
+| **Total focused** | **512 passed, 0 failed, 0 skipped** |
 
 ### Combined Suite (Phase 4C4B2 exact 26-file baseline + 2 new files)
 
@@ -103,7 +120,7 @@ Arithmetic: Phase 4C4B2 baseline 1233 + 38 (original process-key tests) +
 
 ### Full Non-Live Suite
 
-**2142 passed, 0 failed, 0 skipped, 1 warning (pre-existing Pydantic V2 deprecation)**
+**2149 passed, 0 failed, 0 skipped, 1 warning (pre-existing Pydantic V2 deprecation)**
 
 Excluded (live only):
 - `tests/test_genie_live_smoke.py`

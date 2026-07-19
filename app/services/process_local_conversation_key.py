@@ -16,6 +16,13 @@ Security properties:
   - Safe for use as a dictionary key and safe if accidentally returned,
     although callers should avoid returning it in API responses.
 
+Canonicalization:
+  frontend_conversation_id is canonicalized via strip() before hashing,
+  matching the DurableGenieSessionKey contract that strips and stores the
+  canonical value.  This ensures that leading/trailing whitespace variants
+  of the same frontend conversation ID map to the same process-local key
+  and therefore to the same durable logical conversation.
+
 Domain separator (change here or in tests will break the fixed digest vectors):
   b"transparence-process-local-conversation:v1\x00"
 """
@@ -78,7 +85,7 @@ class ProcessLocalConversationKeyError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Internal validators
+# Internal validators / canonicalizers
 # ---------------------------------------------------------------------------
 
 
@@ -104,18 +111,24 @@ def _validate_session_id(session_id: str) -> None:
         raise ProcessLocalConversationKeyError()
 
 
-def _validate_frontend_conversation_id(frontend_conversation_id: str) -> None:
-    """Validate frontend conversation ID.
+def _canonicalize_frontend_conversation_id(frontend_conversation_id: str) -> str:
+    """Canonicalize and validate the frontend conversation ID.
 
     Applies the same rules as DurableGenieSessionKey (non-empty after strip,
     no @ character) without importing the adapter module.  Inlined here to
     preserve adapter isolation while keeping the contract identical.
+
+    Returns the canonical (stripped) value, which is used in the SHA-256
+    digest.  This ensures that leading/trailing whitespace variants of the
+    same frontend conversation ID produce the same process-local key and
+    therefore refer to the same durable logical conversation.
     """
-    stripped = frontend_conversation_id.strip()
-    if not stripped:
+    canonical = frontend_conversation_id.strip()
+    if not canonical:
         raise ProcessLocalConversationKeyError()
-    if "@" in stripped:
+    if "@" in canonical:
         raise ProcessLocalConversationKeyError()
+    return canonical
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +151,14 @@ def build_process_local_conversation_key(
         hash derived by the request identity runtime).
     session_id
         Non-empty session value from the httponly cookie.  Must not contain
-        CR, LF, NUL, or any other ASCII control character (0x00–0x1F, 0x7F).
+        CR, LF, NUL, or any other ASCII control character (0x00\u20131F, 0x7F).
         Maximum 512 UTF-8 bytes.
     frontend_conversation_id
-        Raw conversation ID supplied by the frontend browser.  Validated
-        against the DurableGenieSessionKey contract (non-empty after strip,
-        no ``@`` character).
+        Raw conversation ID supplied by the frontend browser.  Validated and
+        canonicalized against the DurableGenieSessionKey contract: non-empty
+        after strip, no ``@`` character.  Leading/trailing whitespace is
+        stripped before hashing so that whitespace variants of the same ID
+        produce the same process-local key.
 
     Returns
     -------
@@ -159,7 +174,9 @@ def build_process_local_conversation_key(
     """
     _validate_owner_hash(owner_user_id_hash)
     _validate_session_id(session_id)
-    _validate_frontend_conversation_id(frontend_conversation_id)
+    canonical_frontend = _canonicalize_frontend_conversation_id(
+        frontend_conversation_id
+    )
 
     digest: str = hashlib.sha256(
         _DOMAIN_SEP
@@ -167,7 +184,7 @@ def build_process_local_conversation_key(
         + b"\x00"
         + session_id.encode("utf-8")
         + b"\x00"
-        + frontend_conversation_id.encode("utf-8")
+        + canonical_frontend.encode("utf-8")
     ).hexdigest()
 
     return KEY_PREFIX + digest

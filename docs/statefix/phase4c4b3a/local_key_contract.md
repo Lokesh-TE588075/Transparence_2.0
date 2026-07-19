@@ -16,9 +16,25 @@ a SHA-256 domain-separated digest:
 
 ```
 domain_sep = b"transparence-process-local-conversation:v1\x00"
-digest = sha256(domain_sep + owner_ascii + b"\x00" + session_utf8 + b"\x00" + frontend_utf8).hexdigest()
+canonical_frontend = frontend_conversation_id.strip()   # canonicalization
+digest = sha256(domain_sep + owner_ascii + b"\x00" + session_utf8 + b"\x00" + canonical_frontend_utf8).hexdigest()
 plc_key = "plc_v1_" + digest   # 7 + 64 = 71 chars
 ```
+
+## Canonicalization
+
+`frontend_conversation_id` is canonicalized with `strip()` before hashing,
+matching the `DurableGenieSessionKey` contract that strips and stores the
+canonical value.  This ensures:
+
+- `build(..., "conv-1")` == `build(..., "  conv-1  ")` == `build(..., "conv-1\t")`
+- Whitespace variants of the same frontend conversation ID cannot create
+  separate process-local sessions for the same durable logical conversation.
+- The canonical value used in the digest equals the value stored by
+  `DurableGenieSessionKey` — the two keys are logically aligned.
+
+Existing test vectors use plain IDs (no surrounding whitespace), so `strip()`
+is a no-op for them and the documented digest values are unchanged.
 
 ## Purpose
 
