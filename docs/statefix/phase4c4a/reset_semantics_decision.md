@@ -268,19 +268,76 @@ Logout must not be conflated with conversation reset, expiry, or deletion.
 
 **For New Chat:** Use `reset_session`.  The session must not be resumable.
 
-**Note:** `reset_session` sets `is_active=False` and clears Genie IDs, but
-does NOT explicitly null business-context fields (`last_entities`,
-`last_entity_type`, `last_filters`, `last_intent`, `last_user_prompt`,
-`last_enriched_prompt`, `last_download_key`, `last_export_*`,
-`last_table_headers`, `last_row_count`, `latest_table_result`).  These fields
-are rendered unreachable because `get_session()` returns `None` for inactive
-sessions.  However, Phase 4C4B should evaluate whether an additional
-`del self._sessions[key]` (physical removal of the dict entry) would be
-preferable to relying on TTL cleanup, especially for memory management on
-long-running processes.
+**Selected Phase 4C4B implementation: physical removal.**
+
+`reset_session` only sets `is_active=False` and clears Genie IDs.  It does
+NOT clear business-context fields (`last_entities`, `last_entity_type`,
+`last_filters`, `last_intent`, `last_user_prompt`, `last_enriched_prompt`,
+`last_download_key`, `last_export_*`, `last_table_headers`, `last_row_count`,
+`latest_table_result`).  While these are unreachable via `get_session()`,
+the session object itself remains in `self._sessions` consuming memory until
+TTL cleanup.
+
+Phase 4C4B must add a new lock-protected method:
+
+```python
+def remove_session(self, app_conversation_id: str) -> None:
+    """Physically remove the session entry for an app conversation.
+
+    Idempotent: does nothing when the key is absent.
+    Called by the reset coordinator after confirmed durable reset.
+    """
+    with self._lock:
+        self._sessions.pop(app_conversation_id, None)
+```
+
+**Rationale:** New Chat represents complete conversation termination.
+Physical removal is preferable because:
+- All business-context fields are cleared (not just marked unreachable).
+- Memory is freed immediately (no TTL wait on long-running processes).
+- Consistent with `_sessions` being a `Dict[str, GenieSession]` (standard
+  dict pop is safe under the existing `threading.Lock`).
+- Idempotent: missing key returns without error.
+- Compatible with the existing locking model (single `self._lock`).
+
+**This means Phase 4C4B MUST modify `genie_session_store.py`** (add
+`remove_session` method).
+
+**Tests required:**
+- `remove_session` clears all state for the conversation.
+- `remove_session` is idempotent on missing key.
+- `remove_session` is thread-safe under concurrent access.
+- `get_session` returns `None` after `remove_session`.
+- `get_genie_conversation_id` returns `None` after `remove_session`.
+- `_get_or_create_session` creates a fresh session after `remove_session`.
 
 **For Genie-internal reconnection:** Use `reset_genie_mapping`.  The session
 stays active but starts a fresh Genie conversation.
+
+---
+
+## 10. Old-ID Post-Reset Rule
+
+After the durable record is marked RESET:
+
+- The old `frontend_conversation_id` is permanently invalid for normal
+  chat continuation.
+- Any message submitted using the old ID MUST be blocked **before**
+  contacting Genie.
+- The old ID must NOT be treated as a fresh MISS.
+- The old ID must NOT be reactivated.
+- `get_or_create` must NOT be invoked for that request.
+- The frontend must use the newly generated conversation ID exclusively.
+
+This protects against:
+- A stale browser tab sending a late message.
+- A delayed click or retried request.
+- A queued message that was submitted before reset but processed after.
+- Frontend bugs accidentally reusing the old ID.
+
+The dedicated `_DurableLookupOutcome.INACTIVE` outcome (defined in
+`durable_status_and_delete_contract.md` Section 6.3.3) enforces this
+rule at the pipeline level.
 
 ---
 

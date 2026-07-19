@@ -77,6 +77,12 @@ new conversation until the old request completes.  No functional harm
 occurs because the response updates the old conversation object (matched
 by `c.id === activeConvId` captured at send time).
 
+**Phase 4C4B requirement:** After reset succeeds and a new conversation ID
+is activated, the `setIsLoading(false)` call from the old response must be
+guarded against blindly clearing the new conversation’s loading state.
+Minimal fix: compare the captured conversation ID against the current
+`activeConvId` before applying the global loading-state change.
+
 ### 1.8 Late Response Cross-Contamination
 
 **Cannot occur under current code.**  Line 99:

@@ -46,13 +46,15 @@ POST /api/conversations/{frontend_conversation_id}/reset
 
 | File | Change |
 |------|--------|
-| `app/main.py` | Register reset router (`router.include_router(...)`) |
+| `app/main.py` | Register reset router |
+| `app/services/genie_pipeline.py` | Add `INACTIVE` to `_DurableLookupOutcome`; block inactive requests before `_run_inner`; return static no-fallback response |
+| `app/services/genie_session_store.py` | Add `remove_session()` method (lock-protected physical dict removal) |
 
 ### Frontend (modified files)
 
 | File | Change |
 |------|--------|
-| `frontend/src/App.jsx` | `handleNewChat`: add async reset call before generating new ID |
+| `frontend/src/App.jsx` | `handleNewChat`: async reset call, fail-closed error handling, disable New Chat during pending reset, stale-response guard using captured conversation ID |
 
 ### Tests (new files)
 
@@ -60,6 +62,13 @@ POST /api/conversations/{frontend_conversation_id}/reset
 |------|----------|
 | `tests/test_conversation_reset_coordinator.py` | Unit tests for coordinator logic |
 | `tests/test_conversation_reset_route.py` | Route tests: identity, ownership, responses |
+| `tests/test_genie_pipeline_inactive_durable_state.py` | INACTIVE outcome blocks execution; static response; no Genie call; no durable mutation |
+
+### Tests (modified files)
+
+| File | Change |
+|------|--------|
+| `tests/test_genie_session_store.py` | Tests for `remove_session` (idempotent, thread-safe, full state cleared) |
 
 ---
 
@@ -96,7 +105,25 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - On 503: **fail closed** — show error, retain current chat, allow retry
 - On 409: **fail closed** — show error, retain current chat, allow retry
 - On network error: **fail closed** — show error, retain current chat, allow retry
+- New Chat button disabled while reset is pending (prevents double-click)
 - Loading state management during reset call
+
+### In-flight response safety
+- Current architecture already captures `activeConvId` in the `fetch` closure
+  at send time (line 62 of App.jsx: `conversation_id: activeConvId`)
+- Response handler updates only the conversation matching the captured ID
+  (line 99: `if (c.id !== activeConvId) return c`)
+- After reset succeeds and new ID is activated, late responses from the old
+  request write to the old conversation object (still in sidebar) — not the
+  new active conversation
+- `isLoading` must be scoped or guarded: if the old request is still in-flight
+  when reset completes, the spinner on the new chat must not persist
+- Minimal safe mechanism: compare `activeConvId` at response time against
+  the current active ID before applying `setIsLoading(false)` globally
+
+No AbortController is required (Genie may already be processing). The closure
+isolation is sufficient for data safety; only the loading-spinner bleed needs
+a guard.
 
 ---
 
@@ -130,6 +157,8 @@ POST /api/conversations/{frontend_conversation_id}/reset
 |----------|--------|
 | Adapter production changes required? | **No.** `set_status` already exists and is sufficient. |
 | Repository production changes required? | **No.** All needed primitives exist. |
+| GenieSessionStore production change required? | **Yes.** Add `remove_session()` for complete in-memory purge. |
+| GeniePipeline production change required? | **Yes.** Add `INACTIVE` outcome and pre-execution block. |
 | Schema migration required? | **No.** `status` column and all needed columns already exist. |
 | New feature flag required? | **No.** Reset endpoint uses the existing durable-session runtime bundle via `ENABLE_DURABLE_GENIE_SESSION_ADAPTER`. When the durable adapter is disabled, reset returns 503 (cannot confirm durable deactivation). |
 | Existing identity flag sufficient? | **Yes.** `ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY` controls whether owner identity is available. When disabled, reset returns 503 (cannot derive trusted owner). |

@@ -102,8 +102,21 @@ request sends a message on the old conversation ID.
 4. Pipeline checks status, rejects as inactive, does NOT start Genie call.
 5. Returns error to caller.
 
-**This is correct behaviour.** The RESET record acts as a tombstone that
-prevents resumption.
+**This is the REQUIRED behaviour after Phase 4C4B.**  The RESET record
+acts as a block that prevents execution.
+
+### 2.7.1 Current unsafe behaviour (pre-Phase 4C4B)
+
+In the current implementation, non-ACTIVE records are classified as MISS
+(line 1477–1478 of `genie_pipeline.py`).  This means:
+
+1. `_run_inner()` executes — a new Genie conversation is started.
+2. `_maybe_persist_durable_writeback()` calls `get_or_create`.
+3. `get_or_create` returns the existing RESET record unchanged (idempotent).
+4. Writeback may attempt `bind_genie_conversation` on the inactive record.
+
+Phase 4C4B fixes this by introducing `_DurableLookupOutcome.INACTIVE` which
+returns a static error response **before** `_run_inner()` is called.
 
 ### 2.8 Version conflict reload shows RESET
 
@@ -155,6 +168,10 @@ fails, in-memory is not attempted, and 503 is returned.
    - If status is RESET: return 200 (idempotent success).
    - If status is ACTIVE with newer version: return 409 (fail closed).
    - If status is STALE or EXPIRED: proceed with reset using the new version.
+9. Chat requests using an old (inactive) conversation ID must be blocked
+   before any Genie execution via the `INACTIVE` lookup outcome.
+10. The `INACTIVE` outcome returns a static response; no durable mutation
+    occurs; no external Genie request is made.
 4. No repeated CAS loop (maximum one reload + one retry).
 5. No hard delete as conflict recovery.
 6. Inactive records (RESET, STALE, EXPIRED) must never resume Genie communication.
@@ -219,6 +236,46 @@ After New Chat:
 4. If backend reset clears the old in-memory session, but the old response
    is already being processed, the response is based on data already
    retrieved — it does not re-read session state.
+
+---
+
+## 8. Two Concurrency Layers
+
+### Layer A: Reset endpoint CAS
+
+1. Load current owner-scoped record.
+2. Missing → idempotent 200.
+3. Already RESET → idempotent 200.
+4. ACTIVE → `set_status(RESET, expected_version=current.version)`.
+5. STALE → proceed with reset (same as ACTIVE).
+6. EXPIRED → proceed with reset (same as ACTIVE).
+7. One reload maximum after version conflict.
+8. Reload shows RESET → idempotent 200.
+9. Reload shows ACTIVE → 409 fail closed.
+10. No delete; no CAS loop.
+
+### Layer B: Chat request using old ID (post-Phase 4C4B)
+
+1. Durable lookup finds record with status in {RESET, STALE, EXPIRED}.
+2. Pipeline returns `_DurableLookupOutcome.INACTIVE`.
+3. `_run_inner()` is NOT called.
+4. No external Genie request is made.
+5. Static no-fallback response returned:
+   `"This conversation is no longer active. Start a new chat."`
+6. No durable mutation occurs.
+7. No attempt to reuse the same key.
+
+### Unavoidable in-flight race
+
+A request that already passed durable lookup (as ACTIVE or MISS) and
+submitted work to Genie **before** the reset endpoint commits cannot be
+cancelled externally.  However:
+
+- Reset wins for all future application recovery.
+- The late response must NOT repopulate the new frontend chat (guaranteed
+  by React closure semantics — response handler captures old `activeConvId`).
+- Any subsequent request using the old ID is blocked by the `INACTIVE`
+  outcome.
 
 ---
 

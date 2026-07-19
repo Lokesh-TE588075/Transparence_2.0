@@ -236,22 +236,91 @@ independent data stores.
 `GenieSessionStore` alone does NOT prevent durable recovery.  It prevents
 only in-memory session reuse within a single container lifetime.
 
-### 6.3.1 Pipeline Durable-Lookup Classification
+### 6.3.1 Current Pipeline Status Classification (Phase 4C2A/4C3)
 
-The pipeline (`genie_pipeline.py`) does not yet directly call the durable
-adapter (this is wired in Phase 4C3).  When wired, the durable lookup
-operates as follows:
+**Method:** `GeniePipeline._durable_session_lookup()` (genie_pipeline.py,
+line 1390)
 
-1. The durable lookup obtains a `GenieSessionLookupResult`.
-2. The pipeline evaluates `result.record.status`.
-3. Only `ACTIVE` records are classified as **RECOVERED** (Genie conversation
-   may be resumed).
-4. `RESET`, `STALE`, and `EXPIRED` are all classified as **not recoverable**:
-   the Genie conversation binding is not resumed.  A new Genie conversation
-   must be started.
-5. Non-recoverable durable outcomes behave identically to MISS from the
-   pipeline’s perspective: a fresh Genie conversation is started.  However
-   the same-key consequence differs (see Section 6.4).
+**Enum:** `_DurableLookupOutcome` (line 213) with values: `DISABLED`,
+`MISS`, `RECOVERED`.
+
+GeniePipeline accesses the durable adapter through the request-scoped
+runtime bundle (`self._durable_session_runtime_bundle`).  The method
+`_durable_session_lookup` calls `adapter.load(durable_key)` and classifies
+the result:
+
+**Current classification logic (line 1477–1478):**
+```python
+if record.status != ConversationStatus.ACTIVE:
+    return _DurableRequestContext(
+        outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None
+    )
+```
+
+| Durable status | Current outcome | Consequence |
+|----------------|-----------------|-------------|
+| No record | MISS | New Genie conversation started; `get_or_create` called in writeback |
+| ACTIVE + bound | RECOVERED | Existing Genie conversation resumed via `send_message` |
+| ACTIVE + unbound | MISS | New Genie conversation started |
+| **RESET** | **MISS** | **UNSAFE: enters new-conversation flow** |
+| **STALE** | **MISS** | **UNSAFE: enters new-conversation flow** |
+| **EXPIRED** | **MISS** | **UNSAFE: enters new-conversation flow** |
+
+### 6.3.2 Why Inactive-as-MISS Is Unsafe
+
+When a non-ACTIVE record is classified as MISS:
+
+1. `_run_inner()` executes — a new Genie conversation is started externally.
+2. `_maybe_persist_durable_writeback()` is called after execution.
+3. Writeback calls `adapter.get_or_create(key)` which invokes
+   `repository.create_conversation(owner, frontend_id)`.
+4. `create_conversation` is idempotent on logical key — it **returns the
+   existing RESET record unchanged** (status remains RESET, version unchanged).
+5. The writeback then attempts `bind_genie_conversation` on the returned
+   record, potentially mutating a record that should be permanently inactive.
+
+This means an inactive (RESET/STALE/EXPIRED) durable record does NOT
+currently block Genie execution.  It only prevents session **recovery**.
+The pipeline still creates an external Genie conversation and may attempt
+to mutate the inactive durable record.
+
+### 6.3.3 Required Phase 4C4B Fix: Dedicated INACTIVE Outcome
+
+Phase 4C4B must introduce a dedicated outcome:
+
+```python
+class _DurableLookupOutcome:
+    DISABLED  = "DISABLED"
+    MISS      = "MISS"
+    RECOVERED = "RECOVERED"
+    INACTIVE  = "INACTIVE"   # NEW: blocks execution entirely
+```
+
+When the durable lookup finds a record with status in
+`{RESET, STALE, EXPIRED}`:
+
+- Return `_DurableRequestContext(outcome=_DurableLookupOutcome.INACTIVE, ...)`
+- `_run_inner()` must NOT execute.
+- `start_conversation()` must NOT execute.
+- `send_message()` must NOT execute.
+- `get_or_create` must NOT execute.
+- `bind_genie_conversation` must NOT execute.
+- `update_last_genie_message` must NOT execute.
+- Custom fallback must NOT execute.
+- Return a static sanitized response immediately.
+- `fallback_recommended=False`
+- No raw identifiers exposed (owner, frontend ID, record ID, Genie IDs,
+  status value, version).
+
+**Recommended static response:**
+```python
+{
+    "status": "inactive",
+    "message": "This conversation is no longer active. Start a new chat.",
+    "is_table": False,
+    "fallback_recommended": False,
+}
+```
 
 ### 6.4 Critical Finding: Same-Key get_or_create on RESET Record
 
