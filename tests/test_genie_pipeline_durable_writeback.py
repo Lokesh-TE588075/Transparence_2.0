@@ -92,7 +92,7 @@ class RecordingGenieClient:
         return {"message_id": "msg-followup-4c2b"}
 
     def wait_for_message_completion(self, space_id, conv_id, msg_id, **kwargs):
-        return MagicMock(query_attachments=None)
+        return MagicMock(query_attachments=None, message_id=msg_id)
 
     def fetch_query_result(self, *args, **kwargs):
         return None
@@ -849,6 +849,11 @@ class TestIdempotencyAndConflicts:
             return bound_lookup
 
         tracking._real.load = _mocked_load
+        # Phase 4C3: mock update_last_genie_message to succeed without real repo
+        _upd_c = MagicMock()
+        _upd_c.genie_conversation_id = _GENIE_CONV_NEW
+        _upd_c.last_genie_message_id = "msg-new-4c2b"
+        tracking._real.update_last_genie_message = MagicMock(return_value=_upd_c)
 
         result = _build_success_result(genie_conv_id=_GENIE_CONV_NEW)
         returned = _run_writeback_direct(pipeline, result)
@@ -884,6 +889,11 @@ class TestIdempotencyAndConflicts:
             source=GenieSessionLookupSource.REPOSITORY,
             degraded=False,
         ))
+        # Phase 4C3: mock update_last_genie_message to succeed without real repo
+        _upd_d = MagicMock()
+        _upd_d.genie_conversation_id = _GENIE_CONV_NEW
+        _upd_d.last_genie_message_id = "msg-new-4c2b"
+        tracking._real.update_last_genie_message = MagicMock(return_value=_upd_d)
 
         result = _build_success_result(genie_conv_id=_GENIE_CONV_NEW)
         returned = _run_writeback_direct(pipeline, result)
@@ -1111,8 +1121,12 @@ class TestFailurePolicy:
 class TestProhibitedMutations:
     """No lifecycle-mutating adapter operations occur during writeback."""
 
-    def test_update_last_genie_message_not_called(self):
-        """update_last_genie_message is never invoked during MISS writeback."""
+    def test_update_last_genie_message_called_once(self):
+        """update_last_genie_message is invoked exactly once during MISS writeback.
+
+        Phase 4C3 adds final-message persistence after the durable bind step.
+        The approved sequence is: get_or_create → bind → update_last_genie_message.
+        """
         pipeline, _, _, tracking, _ = _make_miss_pipeline_with_tracking()
 
         pipeline.run(
@@ -1121,7 +1135,7 @@ class TestProhibitedMutations:
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
 
-        assert len(tracking.update_last_genie_message_calls) == 0
+        assert len(tracking.update_last_genie_message_calls) == 1
 
     def test_touch_not_called(self):
         """touch is never invoked during MISS writeback."""

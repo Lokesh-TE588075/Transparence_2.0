@@ -71,7 +71,7 @@ class RecordingGenieClient:
         return {"message_id": "msg-followup-1"}
 
     def wait_for_message_completion(self, space_id, conv_id, msg_id, **kwargs):
-        return MagicMock(query_attachments=None)
+        return MagicMock(query_attachments=None, message_id=msg_id)
 
     def fetch_query_result(self, *args, **kwargs):
         return None
@@ -344,12 +344,16 @@ class TestLookupHitRecovery:
         assert store.get_genie_conversation_id(_APP_CONV_ID) == _GENIE_CONV_ID
 
     def test_recovery_no_durable_mutations(self):
-        """No create/bind/update/touch/status/delete on adapter."""
+        """No create/bind/touch/status/delete on adapter for RECOVERED.
+
+        update_last_genie_message IS approved for Phase 4C3 final-message
+        persistence and must NOT be trapped here.
+        """
         pipeline, _, _, adapter, _ = _build_recovered_pipeline()
-        # Guard: wire traps on mutation methods
+        # Guard: prohibit create/bind/touch/status/delete — these are never
+        # called on a RECOVERED conversation.
         adapter.get_or_create = MagicMock(side_effect=AssertionError("create"))
         adapter.bind_genie_conversation = MagicMock(side_effect=AssertionError("bind"))
-        adapter.update_last_genie_message = MagicMock(side_effect=AssertionError("update"))
         adapter.touch = MagicMock(side_effect=AssertionError("touch"))
         adapter.set_status = MagicMock(side_effect=AssertionError("status"))
         adapter.delete = MagicMock(side_effect=AssertionError("delete"))
@@ -545,16 +549,13 @@ class TestLookupMiss:
         assert len(client.send_calls) == 0
 
     def test_miss_no_lifecycle_mutation(self):
-        """Lookup miss → Phase 4C2B writeback (get_or_create+bind are now approved).
+        """Lookup miss → Phase 4C2B+4C3 writeback.
 
-        Only lifecycle-mutating operations remain prohibited on MISS:
-        update_last_genie_message, delete, touch, set_status.
-        get_or_create and bind_genie_conversation ARE called by Phase 4C2B.
+        get_or_create, bind_genie_conversation, and update_last_genie_message
+        are all approved for MISS. delete, touch, and set_status are prohibited.
         """
         pipeline, _, _, adapter = self._make_miss_pipeline()
-        # Lifecycle mutations remain prohibited
-        adapter.update_last_genie_message = MagicMock(
-            side_effect=AssertionError("update prohibited"))
+        # Only true lifecycle mutations are prohibited
         adapter.delete = MagicMock(
             side_effect=AssertionError("delete prohibited"))
         adapter.touch = MagicMock(
@@ -566,10 +567,9 @@ class TestLookupMiss:
             owner_key=_VALID_OWNER_KEY,
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
-        # Phase 4C2B: MISS + Genie success → writeback runs → success result
+        # MISS + Genie success → writeback + message persistence → success
         assert result["status"] == "success"
-        # Confirm the lifecycle-only traps were never triggered
-        adapter.update_last_genie_message.assert_not_called()
+        # Confirm the remaining prohibited operations were never triggered
         adapter.delete.assert_not_called()
         adapter.touch.assert_not_called()
         adapter.set_status.assert_not_called()
@@ -689,6 +689,11 @@ class TestConfirmedDegradedRecovery:
             degraded=True,
         )
         adapter.load = MagicMock(return_value=degraded_result)
+        # Phase 4C3: mock update so it succeeds without a real repo record
+        _upd_a = MagicMock()
+        _upd_a.genie_conversation_id = _GENIE_CONV_ID
+        _upd_a.last_genie_message_id = "msg-followup-1"
+        adapter.update_last_genie_message = MagicMock(return_value=_upd_a)
         bundle = _make_enabled_bundle(adapter)
         setattr(pipeline, "_durable_session_runtime_bundle", bundle)
 
@@ -726,6 +731,11 @@ class TestConfirmedDegradedRecovery:
             record=record, source=GenieSessionLookupSource.CACHE, degraded=True,
         )
         adapter.load = MagicMock(return_value=degraded_result)
+        # Phase 4C3: mock update so it succeeds without a real repo record
+        _upd_b = MagicMock()
+        _upd_b.genie_conversation_id = _GENIE_CONV_ID
+        _upd_b.last_genie_message_id = "msg-followup-1"
+        adapter.update_last_genie_message = MagicMock(return_value=_upd_b)
         bundle = _make_enabled_bundle(adapter)
         setattr(pipeline, "_durable_session_runtime_bundle", bundle)
 
@@ -902,21 +912,19 @@ class TestNoWriteEnforcement:
         adapter.touch.assert_not_called()
 
     def test_hit_no_mutations(self):
-        now = datetime.now(timezone.utc)
-        record = ConversationRecord(
-            conversation_id=str(uuid.uuid4()),
-            owner_user_id_hash=_VALID_OWNER_KEY,
-            frontend_conversation_id=_FRONTEND_CONV_ID,
-            genie_conversation_id=_GENIE_CONV_ID,
-            last_genie_message_id=_GENIE_MSG_ID,
-            status=ConversationStatus.ACTIVE,
-            version=1,
-            created_at=now, updated_at=now, last_active_at=now,
-        )
-        hit_result = GenieSessionLookupResult(
-            record=record, source=GenieSessionLookupSource.REPOSITORY, degraded=False,
-        )
-        pipeline, adapter = self._make_guarded_pipeline(load_return=hit_result)
+        """RECOVERED path: get_or_create/bind/touch/set_status/delete prohibited.
+
+        update_last_genie_message IS approved for Phase 4C3 final-message
+        persistence and must NOT be trapped.  A real pre-seeded repository
+        is used so the adapter can complete the approved update.
+        """
+        pipeline, _, _, adapter, _ = _build_recovered_pipeline()
+        # Prohibit all lifecycle mutations except the approved update
+        adapter.get_or_create = MagicMock(side_effect=AssertionError("create prohibited"))
+        adapter.bind_genie_conversation = MagicMock(side_effect=AssertionError("bind prohibited"))
+        adapter.set_status = MagicMock(side_effect=AssertionError("set_status prohibited"))
+        adapter.delete = MagicMock(side_effect=AssertionError("delete prohibited"))
+        adapter.touch = MagicMock(side_effect=AssertionError("touch prohibited"))
         result = pipeline.run(
             "show shipments", _APP_CONV_ID,
             owner_key=_VALID_OWNER_KEY,
@@ -925,7 +933,7 @@ class TestNoWriteEnforcement:
         assert result["status"] == "success"
         adapter.get_or_create.assert_not_called()
         adapter.bind_genie_conversation.assert_not_called()
-        adapter.update_last_genie_message.assert_not_called()
         adapter.set_status.assert_not_called()
         adapter.delete.assert_not_called()
         adapter.touch.assert_not_called()
+        # update_last_genie_message is called once (Phase 4C3 approved operation)

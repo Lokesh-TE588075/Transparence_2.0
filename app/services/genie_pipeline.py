@@ -35,6 +35,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.services.genie_client import (
@@ -159,6 +160,10 @@ _MSG_DURABLE_WRITEBACK_FAILED = (
     "I wasn't able to complete that request. "
     "Please try again in a moment."
 )
+_MSG_DURABLE_LAST_MSG_FAILED = (
+    "I wasn't able to complete that request. "
+    "Please try again in a moment."
+)
 
 
 class _OwnerKeyContractError(Exception):
@@ -194,6 +199,17 @@ class _DurableWritebackError(Exception):
     """
 
 
+class _DurableLastMessageError(Exception):
+    """Internal-only: final Genie message-ID persistence failed.
+
+    Raised when update_last_genie_message cannot be confirmed after
+    successful Genie execution.  The caller must clear the current
+    request's in-memory Genie mapping and return a sanitised
+    no-fallback error response.  Custom-pipeline fallback is prohibited.
+    The durable record MUST NOT be deleted or deactivated.
+    """
+
+
 class _DurableLookupOutcome:
     """Request-local outcome of the durable session lookup.
 
@@ -207,6 +223,30 @@ class _DurableLookupOutcome:
     DISABLED = "DISABLED"
     MISS = "MISS"
     RECOVERED = "RECOVERED"
+
+
+@dataclass(frozen=True)
+class _DurableRequestContext:
+    """Request-local durable context for one pipeline turn.
+
+    Never stored on the pipeline instance.  Repr never exposes
+    owner hash or frontend conversation ID.
+
+    outcome
+        One of _DurableLookupOutcome.{DISABLED, MISS, RECOVERED}.
+    key
+        DurableGenieSessionKey for MISS and RECOVERED; None for DISABLED.
+    record
+        Confirmed ConversationRecord for RECOVERED; None for DISABLED and
+        MISS (MISS obtains a bound record inside _maybe_persist_durable_writeback
+        but that record is local to that method, not stored here).
+    """
+    outcome: str
+    key: Optional[Any]
+    record: Optional[Any]
+
+    def __repr__(self) -> str:
+        return f"_DurableRequestContext(outcome={self.outcome!r})"
 
 
 def _validate_owner_key(owner_key: object) -> None:
@@ -381,26 +421,36 @@ class GeniePipeline:
             # and frontend_conversation_id are present, perform exactly one
             # read-only lookup to recover an existing Genie conversation
             # mapping from the durable repository.
-            _lookup_outcome = self._durable_session_lookup(
+            _durable_ctx: _DurableRequestContext = self._durable_session_lookup(
                 owner_key=owner_key,
                 frontend_conversation_id=frontend_conversation_id,
                 app_conversation_id=app_conversation_id,
             )
 
-            # Phase 4C2B: capture result so the post-execution writeback can
-            # run after ALL shape-validation retries have completed.  Only the
-            # final Genie conversation ID (present in the result dict) is ever
-            # persisted; intermediate discarded Genie conversations are not.
+            # Phase 4C2B/4C3: capture result so the post-execution writeback and
+            # final-message persistence run after ALL shape-validation retries
+            # have completed.  Only the final Genie conversation ID and message
+            # ID (present in the result dict) are ever persisted.
             _inner_result = self._run_inner(
                 user_message, app_conversation_id, start_time, execution_time_ms,
-                _durable_recovered=(_lookup_outcome == _DurableLookupOutcome.RECOVERED),
+                _durable_recovered=(_durable_ctx.outcome == _DurableLookupOutcome.RECOVERED),
             )
-            # Persist durable record only on a confirmed MISS outcome
-            if _lookup_outcome == _DurableLookupOutcome.MISS:
+            # Phase 4C3: persist final Genie message ID after all retries.
+            # MISS: persist durable record (create+bind) then final message ID.
+            # RECOVERED: persist final message ID using the confirmed lookup record.
+            if _durable_ctx.outcome == _DurableLookupOutcome.MISS:
                 return self._maybe_persist_durable_writeback(
                     result=_inner_result,
                     owner_key=owner_key,
                     frontend_conversation_id=frontend_conversation_id,
+                    app_conversation_id=app_conversation_id,
+                    start_time=start_time,
+                    execution_time_ms=execution_time_ms,
+                )
+            if _durable_ctx.outcome == _DurableLookupOutcome.RECOVERED:
+                return self._maybe_persist_recovered_message(
+                    result=_inner_result,
+                    durable_ctx=_durable_ctx,
                     app_conversation_id=app_conversation_id,
                     start_time=start_time,
                     execution_time_ms=execution_time_ms,
@@ -1343,10 +1393,13 @@ class GeniePipeline:
         owner_key: Optional[str],
         frontend_conversation_id: Optional[str],
         app_conversation_id: str,
-    ) -> str:
+    ) -> "_DurableRequestContext":
         """Perform a read-only durable Genie session lookup.
 
-        Returns a _DurableLookupOutcome value:
+        Returns a _DurableRequestContext carrying the lookup outcome plus,
+        for RECOVERED, the confirmed durable record and key needed by
+        Phase 4C3 final-message persistence.
+
           DISABLED  — durable mode off, no adapter access.
           MISS      — lookup executed, no recoverable record found.
           RECOVERED — existing Genie conversation restored in session store.
@@ -1362,7 +1415,7 @@ class GeniePipeline:
         # --- Gate 1: Is durable mode enabled? ---
         bundle = getattr(self, "_durable_session_runtime_bundle", None)
         if bundle is None or not getattr(bundle, "enabled", False):
-            return _DurableLookupOutcome.DISABLED
+            return _DurableRequestContext(outcome=_DurableLookupOutcome.DISABLED, key=None, record=None)
 
         # --- Gate 2: Prerequisites ---
         if owner_key is None:
@@ -1410,7 +1463,7 @@ class GeniePipeline:
 
         # --- Outcome A: No record found → new-conversation flow ---
         if result is None:
-            return _DurableLookupOutcome.MISS
+            return _DurableRequestContext(outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None)
 
         # --- Outcome A.1: Degraded-read policy ---
         # Per adapter contract, degraded=True means the result came from an
@@ -1422,12 +1475,12 @@ class GeniePipeline:
         # --- Outcome A.2: Only recover ACTIVE records ---
         record = result.record
         if record.status != ConversationStatus.ACTIVE:
-            return _DurableLookupOutcome.MISS  # Non-active: new-conversation flow.
+            return _DurableRequestContext(outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None)  # Non-active: new-conversation flow.
 
         # --- Outcome B: Active record with Genie conversation ID ---
         genie_conversation_id = record.genie_conversation_id
         if not genie_conversation_id:
-            return _DurableLookupOutcome.MISS  # Not yet bound: new-conversation flow.
+            return _DurableRequestContext(outcome=_DurableLookupOutcome.MISS, key=durable_key, record=None)  # Not yet bound: new-conversation flow.
 
         # --- Restore in-memory session mapping ---
         self._store.set_genie_conversation_id(
@@ -1437,7 +1490,8 @@ class GeniePipeline:
             self._store.set_last_message_id(
                 app_conversation_id, record.last_genie_message_id
             )
-        return _DurableLookupOutcome.RECOVERED
+        # Return context carrying the confirmed record for Phase 4C3 message persistence.
+        return _DurableRequestContext(outcome=_DurableLookupOutcome.RECOVERED, key=durable_key, record=record)
 
     def _build_durable_lookup_error_response(
         self,
@@ -1499,7 +1553,8 @@ class GeniePipeline:
         start_time: float,
         execution_time_ms: Optional[int],
     ) -> Dict[str, Any]:
-        """Persist a new durable conversation record on a confirmed MISS.
+        """Persist a new durable conversation record on a confirmed MISS,
+        then persist the final Genie message ID (Phase 4C3).
 
         Called only when:
           - The durable lookup returned MISS.
@@ -1512,10 +1567,17 @@ class GeniePipeline:
           - owner_key is a non-empty string.
           - frontend_conversation_id is a non-empty string.
 
-        On writeback failure: clears the newly established in-memory Genie
-        mapping and returns a sanitized no-fallback error response.
+        Ordering (Phase 4C3 contract):
+          1. genie_conversation_id and genie_message_id verified from result.
+          2. Durable record created / idempotent-loaded via get_or_create.
+          3. Genie conversation ID bound and confirmed (bind_genie_conversation).
+          4. update_last_genie_message called with the confirmed bound-record version.
+          5. Success returned only after message persistence is confirmed.
+
+        On any failure: clears in-memory Genie mapping, returns sanitized
+        no-fallback error.  Does not delete existing durable records.
         """
-        # Eligibility: only persist for a clean successful Genie turn
+        # --- Eligibility: only persist for a clean successful Genie turn ---
         if result.get("status") != "success":
             return result
         if result.get("shape_retry_exhausted"):
@@ -1528,8 +1590,25 @@ class GeniePipeline:
         if not frontend_conversation_id or not isinstance(frontend_conversation_id, str):
             return result
 
+        # --- Phase 4C3: genie_message_id required when conv ID is present ---
+        final_genie_message_id = result.get("genie_message_id")
+        if not final_genie_message_id:
+            # Genie conv ID present but no message ID: incomplete execution contract.
+            # Fail closed: clear in-memory mapping, no custom fallback.
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
+        # --- Step A: Create and bind durable record ---
         try:
-            self._persist_new_durable_conversation(
+            bound_record = self._persist_new_durable_conversation(
                 owner_key=owner_key,
                 frontend_conversation_id=frontend_conversation_id,
                 final_genie_conversation_id=final_genie_conv_id,
@@ -1566,6 +1645,60 @@ class GeniePipeline:
                 app_conversation_id, elapsed_ms
             )
 
+        # --- Step B (Phase 4C3): Persist the final Genie message ID ---
+        # Build the durable key for message persistence using the already-validated
+        # owner_key and frontend_conversation_id components.
+        from app.services.durable_genie_session_adapter import (
+            DurableGenieSessionKey as _DGSKeyMsg,
+        )
+        try:
+            _msg_key = _DGSKeyMsg(
+                owner_user_id_hash=owner_key,
+                frontend_conversation_id=frontend_conversation_id,
+            )
+        except (ValueError, TypeError):
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
+        try:
+            self._persist_durable_last_message(
+                key=_msg_key,
+                confirmed_record=bound_record,
+                final_genie_conv_id=final_genie_conv_id,
+                final_genie_message_id=final_genie_message_id,
+                app_conversation_id=app_conversation_id,
+            )
+        except _DurableLastMessageError:
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+        except Exception:  # noqa: BLE001
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
         return result
 
     def _persist_new_durable_conversation(
@@ -1575,8 +1708,12 @@ class GeniePipeline:
         frontend_conversation_id: str,
         final_genie_conversation_id: str,
         app_conversation_id: str,
-    ) -> None:
+    ) -> Any:
         """Create and bind a new durable conversation record.
+
+        Returns the confirmed ConversationRecord after create+bind succeeds.
+        The returned record carries the version needed for Phase 4C3
+        update_last_genie_message.
 
         Accesses the adapter exclusively through the attached runtime bundle.
         Never accesses the repository directly.
@@ -1626,7 +1763,7 @@ class GeniePipeline:
         existing_genie_id = record.genie_conversation_id
         if existing_genie_id == final_genie_conversation_id:
             # Idempotent success: already bound to the same ID
-            return
+            return record
         if existing_genie_id is not None:
             # Different binding already exists: fail closed, never overwrite
             raise _DurableWritebackError(
@@ -1655,7 +1792,7 @@ class GeniePipeline:
             reloaded_id = reloaded.record.genie_conversation_id
             if reloaded_id == final_genie_conversation_id:
                 # Idempotent success: another caller bound the same ID
-                return
+                return reloaded.record
             # Different ID or still unbound: fail closed
             raise _DurableWritebackError(
                 "Durable record conflict: different or missing binding after reload."
@@ -1672,6 +1809,8 @@ class GeniePipeline:
             raise _DurableWritebackError(
                 "Durable bind returned unexpected Genie conversation ID."
             )
+        # Return confirmed bound record for Phase 4C3 message persistence.
+        return bound_record
 
     def _build_durable_writeback_error_response(
         self,
@@ -1778,3 +1917,237 @@ class GeniePipeline:
             # --- Pipeline-level error signal ---
             "fallback_recommended":    True,
         }
+
+    # -------------------------------------------------------------------------
+    # PHASE 4C3: FINAL GENIE MESSAGE-ID PERSISTENCE
+    # -------------------------------------------------------------------------
+
+    def _build_durable_last_msg_error_response(
+        self,
+        app_conversation_id: str,
+        elapsed_ms: int,
+    ) -> Dict[str, Any]:
+        """Build a sanitized no-fallback error response for final-message persistence failures.
+
+        Sets fallback_recommended=False: do not route to the custom pipeline.
+        No ownership values, Genie IDs, repository details, SQL, or internal
+        exception text are included.
+        """
+        return {
+            "status":            "error",
+            "message":           _MSG_DURABLE_LAST_MSG_FAILED,
+            "is_table":          False,
+            "table_data":        None,
+            "row_count":         0,
+            "preview_row_count": 0,
+            "returned_row_count": 0,
+            "total_row_count": None,
+            "export_row_count": None,
+            "display_row_limit": self._table_display_row_limit,
+            "download_key":      None,
+            "export_id":         None,
+            "export_status":     None,
+            "export_mode":       None,
+            "execution_time_ms": elapsed_ms,
+            "conversation_id":   app_conversation_id,
+            "clarification":     None,
+            "source":                  "genie",
+            "genie_conversation_id":   None,
+            "genie_message_id":        None,
+            "generated_sql":           None,
+            "suggested_questions":     [],
+            "has_visualization":       False,
+            "visualization":           None,
+            "attachment_types":        [],
+            "debug_info":              None,
+            "fallback_recommended":    False,
+        }
+
+    def _persist_durable_last_message(
+        self,
+        *,
+        key: Any,
+        confirmed_record: Any,
+        final_genie_conv_id: str,
+        final_genie_message_id: str,
+        app_conversation_id: str,
+    ) -> None:
+        """Persist the final Genie message ID into the durable record.
+
+        Called after:
+        - MISS: _persist_new_durable_conversation returned the confirmed bound record.
+        - RECOVERED: _run_inner completed using the recovered Genie conversation.
+
+        Uses compare-and-swap semantics (expected_version from confirmed_record).
+        One reload-retry on version conflict; fail closed on any other outcome.
+
+        Idempotency: when confirmed_record.last_genie_message_id already equals
+        final_genie_message_id (and conv IDs match), the update is skipped.
+
+        Raises _DurableLastMessageError on any unrecoverable failure.
+        """
+        bundle = getattr(self, "_durable_session_runtime_bundle", None)
+        if bundle is None or not getattr(bundle, "enabled", False):
+            raise _DurableLastMessageError("Durable bundle unavailable for message update.")
+        adapter = getattr(bundle, "adapter", None)
+        if adapter is None:
+            raise _DurableLastMessageError("Durable adapter unavailable for message update.")
+
+        from app.services.durable_genie_session_adapter import (
+            DurableGenieSessionUnavailableError,
+            DurableGenieSessionVersionConflictError,
+            DurableGenieSessionNotFoundError,
+            DurableGenieSessionAdapterError,
+        )
+
+        existing_genie_conv = confirmed_record.genie_conversation_id
+        if existing_genie_conv != final_genie_conv_id:
+            raise _DurableLastMessageError(
+                "Durable record has mismatched Genie conversation ID."
+            )
+
+        if confirmed_record.last_genie_message_id == final_genie_message_id:
+            return
+
+        try:
+            updated_record = adapter.update_last_genie_message(
+                key,
+                final_genie_message_id,
+                expected_version=confirmed_record.version,
+            )
+        except DurableGenieSessionVersionConflictError:
+            try:
+                reloaded = adapter.load(key)
+            except Exception as exc:
+                raise _DurableLastMessageError(
+                    "Durable reload after message-update conflict failed."
+                ) from exc
+            if reloaded is None:
+                raise _DurableLastMessageError(
+                    "Durable record not found after message-update conflict."
+                )
+            reloaded_record = reloaded.record
+            if reloaded_record.genie_conversation_id != final_genie_conv_id:
+                raise _DurableLastMessageError(
+                    "Durable record has different conversation after conflict reload."
+                )
+            if reloaded_record.last_genie_message_id == final_genie_message_id:
+                return
+            raise _DurableLastMessageError(
+                "Durable record has different or missing message ID after conflict reload."
+            )
+        except DurableGenieSessionUnavailableError as exc:
+            raise _DurableLastMessageError(
+                "Durable session unavailable during message update."
+            ) from exc
+        except DurableGenieSessionNotFoundError as exc:
+            raise _DurableLastMessageError(
+                "Durable record not found during message update."
+            ) from exc
+        except DurableGenieSessionAdapterError as exc:
+            raise _DurableLastMessageError(
+                "Durable adapter error during message update."
+            ) from exc
+        except Exception as exc:
+            raise _DurableLastMessageError(
+                "Durable last-message update failed."
+            ) from exc
+
+        if updated_record.genie_conversation_id != final_genie_conv_id:
+            raise _DurableLastMessageError(
+                "Durable update returned unexpected Genie conversation ID."
+            )
+        if updated_record.last_genie_message_id != final_genie_message_id:
+            raise _DurableLastMessageError(
+                "Durable update returned unexpected message ID."
+            )
+
+    def _maybe_persist_recovered_message(
+        self,
+        *,
+        result: Dict[str, Any],
+        durable_ctx: "_DurableRequestContext",
+        app_conversation_id: str,
+        start_time: float,
+        execution_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        """Persist the final Genie message ID for a successfully RECOVERED turn.
+
+        Called only for RECOVERED outcomes after _run_inner() completes.
+        Does NOT call get_or_create or bind_genie_conversation.
+
+        Eligibility gates (any False returns result unchanged):
+          - result status is "success".
+          - shape_retry_exhausted is not set.
+          - genie_conversation_id is present in the result.
+
+        Missing genie_message_id when genie_conversation_id is present: fail closed.
+        Any persistence failure: fail closed, clear in-memory mapping, no custom fallback.
+        """
+        if result.get("status") != "success":
+            return result
+        if result.get("shape_retry_exhausted"):
+            return result
+        final_genie_conv_id = result.get("genie_conversation_id")
+        if not final_genie_conv_id:
+            return result
+
+        final_genie_message_id = result.get("genie_message_id")
+        if not final_genie_message_id:
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
+        key = durable_ctx.key
+        record = durable_ctx.record
+        if key is None or record is None:
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
+        try:
+            self._persist_durable_last_message(
+                key=key,
+                confirmed_record=record,
+                final_genie_conv_id=final_genie_conv_id,
+                final_genie_message_id=final_genie_message_id,
+                app_conversation_id=app_conversation_id,
+            )
+        except _DurableLastMessageError:
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+        except Exception:  # noqa: BLE001
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_last_msg_error_response(app_conversation_id, elapsed_ms)
+
+        return result
