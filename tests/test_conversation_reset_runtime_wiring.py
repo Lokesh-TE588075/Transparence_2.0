@@ -291,3 +291,160 @@ class TestSharedRuntimeWiring:
             if hasattr(r, "path") and "/api/chat" == getattr(r, "path", "")
         ]
         assert len(chat_routes) >= 1, "Chat route /api/chat must remain registered"
+
+    # -----------------------------------------------------------------------
+    # Tests 11-18: Behavioural proofs for call-time and lifecycle invariants.
+    # -----------------------------------------------------------------------
+
+    def test_11_get_genie_pipeline_called_exactly_once(self):
+        """Runtime bridge calls get_genie_pipeline exactly once per coordinator construction."""
+        from app.services.conversation_reset_runtime import get_conversation_reset_coordinator
+
+        pipeline, _, _ = _make_fake_pipeline()
+        mock_get = MagicMock(return_value=pipeline)
+
+        with patch("app.services.genie_backend_factory.get_genie_pipeline", mock_get):
+            get_conversation_reset_coordinator()
+
+        assert mock_get.call_count == 1, (
+            "get_genie_pipeline must be called exactly once per coordinator construction"
+        )
+
+    def test_12_runtime_bridge_does_not_call_build_pipeline_directly(self):
+        """Runtime bridge must not bypass get_genie_pipeline and call _build_pipeline."""
+        from app.services.conversation_reset_runtime import get_conversation_reset_coordinator
+        import app.services.genie_backend_factory as _factory
+
+        pipeline, _, _ = _make_fake_pipeline()
+        build_calls = MagicMock()
+
+        with (
+            patch("app.services.genie_backend_factory.get_genie_pipeline", return_value=pipeline),
+            patch.object(_factory, "_build_pipeline", build_calls),
+        ):
+            get_conversation_reset_coordinator()
+
+        build_calls.assert_not_called()
+
+    def test_13_runtime_bridge_does_not_instantiate_session_store_at_call_time(self):
+        """Runtime bridge never constructs GenieSessionStore during coordinator retrieval."""
+        from app.services.conversation_reset_runtime import get_conversation_reset_coordinator
+        from app.services.genie_session_store import GenieSessionStore
+
+        pipeline, _, _ = _make_fake_pipeline()
+        constructed: list = []
+        original_init = GenieSessionStore.__init__
+
+        def _spy(self, *a, **kw):
+            constructed.append("store")
+            return original_init(self, *a, **kw)
+
+        with (
+            patch.object(GenieSessionStore, "__init__", _spy),
+            patch("app.services.genie_backend_factory.get_genie_pipeline", return_value=pipeline),
+        ):
+            get_conversation_reset_coordinator()
+
+        assert constructed == [], (
+            "Runtime bridge must not construct GenieSessionStore at call time"
+        )
+
+    def test_14_runtime_bridge_does_not_instantiate_durable_adapter_at_call_time(self):
+        """Runtime bridge never constructs DurableGenieSessionAdapter during coordinator retrieval."""
+        from app.services.conversation_reset_runtime import get_conversation_reset_coordinator
+        from app.services.durable_genie_session_adapter import DurableGenieSessionAdapter
+
+        pipeline, _, _ = _make_fake_pipeline()
+        constructed: list = []
+        original_init = DurableGenieSessionAdapter.__init__
+
+        def _spy(self, *a, **kw):
+            constructed.append("adapter")
+            return original_init(self, *a, **kw)
+
+        with (
+            patch.object(DurableGenieSessionAdapter, "__init__", _spy),
+            patch("app.services.genie_backend_factory.get_genie_pipeline", return_value=pipeline),
+        ):
+            get_conversation_reset_coordinator()
+
+        assert constructed == [], (
+            "Runtime bridge must not construct DurableGenieSessionAdapter at call time"
+        )
+
+    def test_15_missing_pipeline_fails_closed_with_unavailable_error(self):
+        """When get_genie_pipeline raises, raises ConversationResetRuntimeUnavailableError."""
+        import app.services.genie_backend_factory  # noqa: F401 — required for patch() resolution
+        from app.services.conversation_reset_runtime import (
+            get_conversation_reset_coordinator,
+            ConversationResetRuntimeUnavailableError,
+        )
+
+        with patch(
+            "app.services.genie_backend_factory.get_genie_pipeline",
+            side_effect=RuntimeError("pipeline not initialized"),
+        ):
+            with pytest.raises(ConversationResetRuntimeUnavailableError):
+                get_conversation_reset_coordinator()
+
+    def test_16_missing_durable_bundle_fails_closed(self):
+        """Pipeline without _durable_session_runtime_bundle raises ConversationResetRuntimeUnavailableError."""
+        import app.services.genie_backend_factory  # noqa: F401 — required for patch() resolution
+        from app.services.conversation_reset_runtime import (
+            get_conversation_reset_coordinator,
+            ConversationResetRuntimeUnavailableError,
+        )
+        from app.services.genie_session_store import GenieSessionStore
+
+        # Pipeline has _store but no _durable_session_runtime_bundle.
+        pipeline = SimpleNamespace(_store=GenieSessionStore())
+
+        with patch(
+            "app.services.genie_backend_factory.get_genie_pipeline",
+            return_value=pipeline,
+        ):
+            with pytest.raises(ConversationResetRuntimeUnavailableError):
+                get_conversation_reset_coordinator()
+
+    def test_17_missing_adapter_fails_closed(self):
+        """Bundle with adapter=None raises ConversationResetRuntimeUnavailableError."""
+        import app.services.genie_backend_factory  # noqa: F401 — required for patch() resolution
+        from app.services.conversation_reset_runtime import (
+            get_conversation_reset_coordinator,
+            ConversationResetRuntimeUnavailableError,
+        )
+        from app.services.genie_session_store import GenieSessionStore
+
+        bundle = SimpleNamespace(adapter=None)
+        pipeline = SimpleNamespace(
+            _store=GenieSessionStore(),
+            _durable_session_runtime_bundle=bundle,
+        )
+
+        with patch(
+            "app.services.genie_backend_factory.get_genie_pipeline",
+            return_value=pipeline,
+        ):
+            with pytest.raises(ConversationResetRuntimeUnavailableError):
+                get_conversation_reset_coordinator()
+
+    def test_18_shutdown_lifecycle_calls_reset_genie_pipeline_exactly_once_behavioural(self):
+        """Lifespan finally block calls reset_genie_pipeline exactly once (behavioural)."""
+        import asyncio as _asyncio
+        import app.main as m
+
+        reset_calls: list = []
+
+        async def _run_lifespan():
+            with patch.object(
+                m,
+                "reset_genie_pipeline",
+                side_effect=lambda: reset_calls.append(1),
+            ):
+                async with m.lifespan(m.app):
+                    pass
+
+        _asyncio.run(_run_lifespan())
+        assert len(reset_calls) == 1, (
+            "reset_genie_pipeline must be called exactly once on shutdown"
+        )

@@ -801,11 +801,22 @@ class TestSharedInstanceInvariants:
         assert "fallback" not in body
 
     def test_30_no_delete_operation_occurs(self):
-        """Coordinator.reset() is called, but no delete operation is used."""
+        """adapter.delete() is never called during a reset (behavioural + source checks)."""
         identity = _make_identity(_OWNER_A)
         request = _make_request()
 
-        coordinator, _ = _make_real_coordinator_and_store()
+        adapter = _make_real_adapter()
+        coordinator, _ = _make_real_coordinator_and_store(adapter)
+
+        # Behavioural spy: intercept adapter.delete and assert it is never invoked.
+        original_delete = adapter.delete
+        delete_calls: list = []
+
+        def _spy_delete(*args, **kwargs):
+            delete_calls.append((args, kwargs))
+            return original_delete(*args, **kwargs)
+
+        adapter.delete = _spy_delete  # type: ignore[method-assign]
 
         with (
             patch(_RESOLVE_PATCH, return_value=identity),
@@ -817,8 +828,11 @@ class TestSharedInstanceInvariants:
         # ConversationResetCoordinator must never call it — it uses
         # set_status / get_or_create (soft-reset) only.
         assert resp.status_code == 200
+        assert delete_calls == [], (
+            f"adapter.delete must not be called during reset; calls: {delete_calls}"
+        )
 
-        # Source-level contract: coordinator must not reference adapter.delete
+        # Source-level containment check (secondary).
         import inspect
         from app.services.conversation_reset_coordinator import ConversationResetCoordinator as _CRC
         _src = inspect.getsource(_CRC)
