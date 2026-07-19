@@ -72,8 +72,8 @@ required or planned for the accepted recovery contract.
 
 - **Implementation commit**: `33f4f60fa35466cf8bbe4bb08cd69b9288c3a482`
   Message: `Bind process-local conversations to trusted owner`
-- **Validation-correction commit**: see `git log` — committed as
-  `Correct Phase 4C4B3A contract and validation`
+- **Validation-correction commit**: `638d899dd36276db25890816f3605ddedbc53d33`
+  Message: `Correct Phase 4C4B3A contract and validation`
 
 ## Test Results
 
