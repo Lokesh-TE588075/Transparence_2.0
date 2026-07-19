@@ -6,7 +6,23 @@ Durable Conversation Creation and Genie Binding After Lookup Miss
 ## Verdict
 **PASSED**
 
-All 1871 non-live tests pass.  Zero failures.  Zero skipped.  Zero collection errors.
+All validation suites passed with zero failures and zero skipped tests.
+
+## Test Summary
+
+| Suite | Collected | Passed | Failed | Skipped |
+|---|---|---|---|---|
+| Focused writeback | 50 | 50 | 0 | 0 |
+| Focused Phase 4C2A + 4C2B | 111 | 111 | 0 | 0 |
+| Exact 23-file combined | 1044 | 1044 | 0 | 0 |
+| Complete non-live | 1871 | 1871 | 0 | 0 |
+
+### Arithmetic
+
+- Exact 23-file combined: 994 (previous exact 22-file suite) + 50 (Phase 4C2B writeback) = **1044**
+- Complete non-live: 1821 (Phase 4C2A non-live baseline) + 50 (new writeback tests) = **1871**
+
+The exact 23-file suite and the complete non-live suite are distinct runs.
 
 ## Changes Delivered
 
