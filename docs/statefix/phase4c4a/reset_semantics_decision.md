@@ -161,11 +161,19 @@ path.  The owner is derived server-side from the trusted header.
 | Condition | Status Code | Body |
 |-----------|-------------|------|
 | Already RESET | 200 | Same as success (idempotent) |
-| Record not found | 404 | `{"status": "not_found", "message": "Conversation not found."}` |
-| Ownership mismatch | 404 | Same as not-found (no leakage) |
-| Durable runtime disabled | 200 | `{"status": "reset", "message": "Conversation has been reset."}` (in-memory only) |
+| Record not found for trusted owner | 200 | Same as success (desired postcondition already satisfied; idempotent) |
+| Same frontend ID belongs to another owner | 200 | Same as owner-scoped absence (no cross-owner leakage) |
+| Missing or invalid trusted identity | 401 | `{"status": "unauthorized", "message": "Authentication required."}` |
+| Trusted identity runtime unavailable | 503 | `{"status": "unavailable", "message": "Service temporarily unavailable."}` |
+| Durable runtime disabled or unavailable | 503 | `{"status": "unavailable", "message": "Service temporarily unavailable."}` |
 | Repository unavailable | 503 | `{"status": "unavailable", "message": "Service temporarily unavailable."}` |
-| Version conflict | 409 | `{"status": "conflict", "message": "Conversation state has changed. Please retry."}` |
+| Version conflict (reload=RESET) | 200 | Same as success (idempotent) |
+| Version conflict (reload=ACTIVE) | 409 | `{"status": "conflict", "message": "Conversation state has changed. Please retry."}` |
+| Invalid frontend conversation ID | 400 | `{"status": "invalid_request", "message": "Invalid conversation identifier."}` |
+
+**Why missing-record returns 200:** The desired postcondition ("this frontend
+conversation ID has no active durable state") is already satisfied.  Reset is
+idempotent.  Record existence and cross-owner information are not exposed.
 
 ### 7.6 Already-Reset Idempotency
 
@@ -202,9 +210,18 @@ Recommended safety sequence:
 ```
 
 The frontend MUST NOT clear UI state until the backend confirms reset (step 3).
-If the backend returns 503, the frontend should still proceed with new ID
-generation but log the failure (durable record stays ACTIVE — acceptable
-graceful degradation).
+
+**Failure policy: fail closed.**
+
+When backend returns 503, 409, or any other persistence failure:
+- Show a sanitized static error to the user.
+- Retain the current conversation and ID.
+- Do not present reset as successful.
+- Do not automatically generate or activate a replacement ID.
+- Allow the user to retry.
+
+"Start another chat without deactivating the old one" would be a separate,
+explicitly labelled product action and is not part of the reset contract.
 
 ### 7.9 Frontend Does Not Receive New ID from Backend
 
@@ -220,16 +237,25 @@ frontend-generated UUIDs.
 ### 8.1 Session Expiry
 
 The existing 24-hour TTL in `GenieSessionStore` handles natural expiry of
-in-memory sessions.  For durable records, a background job (future phase)
-should transition ACTIVE records with `last_active_at` older than the
-expiry threshold to EXPIRED status.
+in-memory sessions.  Durable expiry is a separate retention/lifecycle policy
+that may later use `EXPIRED` status based on approved TTL and retention
+requirements.  No automatic durable expiry behaviour is introduced by Phase
+4C4B.  The current New Chat implementation uses only `RESET`.
 
 ### 8.2 Logout
 
-No logout UI exists currently.  When implemented:
-- All ACTIVE durable records for the user should be transitioned to RESET.
-- All in-memory sessions should be cleared.
-- This is a bulk operation outside the scope of Phase 4C4B.
+Ordinary logout:
+- Clears authentication state.
+- Clears browser-local conversation state as required by the application.
+- Does **not** change durable conversation status by default.
+- Preserves conversations for future recovery by the same authenticated owner.
+
+Bulk deactivation requires a separate explicit product action such as:
+- "End all conversations" user action;
+- Account offboarding;
+- Administrator retention enforcement.
+
+Logout must not be conflated with conversation reset, expiry, or deletion.
 
 ---
 
@@ -241,6 +267,17 @@ No logout UI exists currently.  When implemented:
 | `reset_genie_mapping` | Yes | No | **No** (keeps active) | **Yes** (extends TTL) |
 
 **For New Chat:** Use `reset_session`.  The session must not be resumable.
+
+**Note:** `reset_session` sets `is_active=False` and clears Genie IDs, but
+does NOT explicitly null business-context fields (`last_entities`,
+`last_entity_type`, `last_filters`, `last_intent`, `last_user_prompt`,
+`last_enriched_prompt`, `last_download_key`, `last_export_*`,
+`last_table_headers`, `last_row_count`, `latest_table_result`).  These fields
+are rendered unreachable because `get_session()` returns `None` for inactive
+sessions.  However, Phase 4C4B should evaluate whether an additional
+`del self._sessions[key]` (physical removal of the dict entry) would be
+preferable to relying on TTL cleanup, especially for memory management on
+long-running processes.
 
 **For Genie-internal reconnection:** Use `reset_genie_mapping`.  The session
 stays active but starts a fresh Genie conversation.

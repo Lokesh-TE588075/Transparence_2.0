@@ -218,17 +218,40 @@ the old one.  This means:
 - `create_conversation` is **idempotent on logical key** — if a record exists (ANY status), it returns it unchanged.
 - This means calling `get_or_create` on a RESET key returns the RESET record.
 
-### 6.3 Pipeline Evaluation
+### 6.3 Durable vs In-Memory Status: Separate Systems
 
-The pipeline (`genie_pipeline.py`) currently does NOT directly call the
-durable adapter.  The durable lookup path (when wired in Phase 4C3)
+**A. Durable lifecycle (`ConversationRecord.status`):**
+
+`ACTIVE`, `STALE`, `RESET`, `EXPIRED` — persisted in the repository.  The
+durable adapter `load()` method returns records of ANY status.  It does NOT
+filter.  Status evaluation is the pipeline’s responsibility.
+
+**B. In-memory lifecycle (`GenieSession.is_active` + expiry):**
+
+`GenieSessionStore` governs only the process-local session object.  Its
+`is_active` flag and `expires_at` field are separate from durable
+`ConversationStatus`.  They operate on independent timelines and
+independent data stores.
+
+`GenieSessionStore` alone does NOT prevent durable recovery.  It prevents
+only in-memory session reuse within a single container lifetime.
+
+### 6.3.1 Pipeline Durable-Lookup Classification
+
+The pipeline (`genie_pipeline.py`) does not yet directly call the durable
+adapter (this is wired in Phase 4C3).  When wired, the durable lookup
 operates as follows:
 
 1. The durable lookup obtains a `GenieSessionLookupResult`.
-2. The pipeline checks `result.record.status`.
-3. Non-ACTIVE records are **not** used for Genie communication resumption.
-4. RESET, STALE, and EXPIRED all behave identically: the Genie conversation
-   binding is not resumed.  A new Genie conversation is started.
+2. The pipeline evaluates `result.record.status`.
+3. Only `ACTIVE` records are classified as **RECOVERED** (Genie conversation
+   may be resumed).
+4. `RESET`, `STALE`, and `EXPIRED` are all classified as **not recoverable**:
+   the Genie conversation binding is not resumed.  A new Genie conversation
+   must be started.
+5. Non-recoverable durable outcomes behave identically to MISS from the
+   pipeline’s perspective: a fresh Genie conversation is started.  However
+   the same-key consequence differs (see Section 6.4).
 
 ### 6.4 Critical Finding: Same-Key get_or_create on RESET Record
 

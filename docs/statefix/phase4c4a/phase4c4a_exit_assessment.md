@@ -25,11 +25,11 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - Request body: empty `{}`
 - Success: 200 `{"status": "reset", "conversation_id": "...", "message": "Conversation has been reset."}`
 - Already RESET: 200 (idempotent, no version bump)
-- Not found / ownership mismatch: 404
+- Not found / ownership mismatch: 200 (idempotent — postcondition satisfied)
 - Repository unavailable: 503
 - Version conflict (reload=RESET): 200
 - Version conflict (reload=ACTIVE): 409
-- Durable disabled: 200 (in-memory only)
+- Durable disabled: 503 (cannot confirm durable deactivation)
 
 ---
 
@@ -93,9 +93,9 @@ POST /api/conversations/{frontend_conversation_id}/reset
 - `handleNewChat` becomes async
 - Sends `POST /api/conversations/{activeConvId}/reset` before ID generation
 - On 200: generates new UUID, activates new conversation
-- On 503: generates new UUID anyway (graceful degradation), logs warning
-- On 409: shows transient toast/error, does NOT clear UI
-- On 404: generates new UUID (no durable record existed)
+- On 503: **fail closed** — show error, retain current chat, allow retry
+- On 409: **fail closed** — show error, retain current chat, allow retry
+- On network error: **fail closed** — show error, retain current chat, allow retry
 - Loading state management during reset call
 
 ---
@@ -108,8 +108,8 @@ POST /api/conversations/{frontend_conversation_id}/reset
 | Route ownership isolation | Different owner → 404 |
 | Durable reset success | ACTIVE → RESET transition |
 | Already-reset idempotency | RESET → 200 without version bump |
-| Missing record | 404 response |
-| Durable runtime disabled | In-memory only; 200 response |
+| Missing record | 200 idempotent response |
+| Durable runtime disabled | 503 response (cannot confirm deactivation) |
 | Version conflict (reload=RESET) | 200 idempotent |
 | Version conflict (reload=ACTIVE) | 409 response |
 | Repository unavailable | 503 response |
@@ -131,10 +131,10 @@ POST /api/conversations/{frontend_conversation_id}/reset
 | Adapter production changes required? | **No.** `set_status` already exists and is sufficient. |
 | Repository production changes required? | **No.** All needed primitives exist. |
 | Schema migration required? | **No.** `status` column and all needed columns already exist. |
-| New feature flag required? | **No.** Reset endpoint inherits existing `USE_DURABLE_GENIE_SESSION_STATE` flag. When disabled, only in-memory reset occurs. |
-| Existing identity flag sufficient? | **Yes.** `ENABLE_TRUSTED_REQUEST_IDENTITY` controls whether owner identity is available. |
-| Existing durable-state flag sufficient? | **Yes.** `USE_DURABLE_GENIE_SESSION_STATE` controls whether durable path is executed. |
-| Frontend and backend must deploy together? | **Recommended but not strictly required.** If frontend deploys first, the reset call will 404 (endpoint doesn’t exist) and frontend should handle gracefully (same as 503 degradation). If backend deploys first, reset endpoint exists but is never called until frontend updates. |
+| New feature flag required? | **No.** Reset endpoint uses the existing durable-session runtime bundle via `ENABLE_DURABLE_GENIE_SESSION_ADAPTER`. When the durable adapter is disabled, reset returns 503 (cannot confirm durable deactivation). |
+| Existing identity flag sufficient? | **Yes.** `ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY` controls whether owner identity is available. When disabled, reset returns 503 (cannot derive trusted owner). |
+| Existing durable-state flag sufficient? | **Yes.** `ENABLE_DURABLE_GENIE_SESSION_ADAPTER` + `CONVERSATION_REPOSITORY_BACKEND` + `ENABLE_LAKEBASE_CONVERSATION_REPOSITORY` control the durable path. |
+| Frontend and backend must deploy together? | **Backend first or atomic.** Preferred: deploy backend reset endpoint first, validate availability and feature-flag behaviour, then deploy frontend integration. Alternative: deploy both atomically in one controlled release. **Prohibited:** frontend reset integration before the backend endpoint is available. Frontend and backend must be tested together before production activation. |
 
 ---
 

@@ -124,11 +124,14 @@ user that the conversation is active.
 
 ### 2.10 Repository unavailable
 
-**Policy:**
+**Policy: fail closed.**
 - Return 503 to the frontend.
-- Frontend proceeds with new ID generation (graceful degradation).
-- Old in-memory session is still cleared (best-effort).
-- Old durable record remains ACTIVE until repository recovers.
+- Frontend retains the current conversation and ID.
+- Frontend shows a sanitized static error.
+- Frontend does NOT generate a new ID or present reset as successful.
+- User may retry.
+- Old in-memory session is NOT cleared (durable authority was not confirmed).
+- Old durable record remains ACTIVE until repository recovers and reset succeeds.
 
 ### 2.11 Reset succeeds but in-memory cleanup throws
 
@@ -167,12 +170,13 @@ fails, in-memory is not attempted, and 503 is returned.
 |--------------|-----------------|------------------|
 | Durable reset succeeds | 200 | Generate new UUID, activate new conversation |
 | Already RESET | 200 | Same as success |
-| Record not found | 404 | Generate new UUID (old record never existed durably) |
+| Record not found for owner | 200 | Same as success (postcondition satisfied) |
 | Version conflict (reload=RESET) | 200 | Same as success |
-| Version conflict (reload=ACTIVE) | 409 | Show transient error; do not clear UI |
-| Repository unavailable | 503 | Generate new UUID anyway (graceful degradation); log warning |
-| Durable runtime disabled | 200 | Same as success (in-memory-only reset) |
-| In-memory cleanup fails | 200 | (transparent to frontend) |
+| Version conflict (reload=ACTIVE) | 409 | Show transient error; retain current chat; allow retry |
+| Repository unavailable | 503 | **Fail closed**: show error; retain current chat; allow retry |
+| Durable runtime disabled | 503 | **Fail closed**: reset cannot be confirmed without durable runtime |
+| Trusted identity unavailable | 503 | **Fail closed**: show error; retain current chat; allow retry |
+| In-memory cleanup fails after durable success | 200 | (transparent to frontend; session expires via TTL) |
 
 ---
 
