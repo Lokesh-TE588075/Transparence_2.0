@@ -458,6 +458,7 @@ def test_runtime_wiring_does_not_import_repository_or_lakebase_modules() -> None
 
 
 def test_main_chat_pipeline_and_store_files_remain_runtime_unmodified() -> None:
+    import re
     for path in [
         "app/main.py",
         "app/routes/chat.py",
@@ -466,7 +467,14 @@ def test_main_chat_pipeline_and_store_files_remain_runtime_unmodified() -> None:
     ]:
         text = pathlib.Path(path).read_text(encoding="utf-8")
         assert "durable_genie_session_runtime_factory" not in text
-        assert "DurableGenieSessionAdapter" not in text
+        # The DurableGenieSessionAdapter CLASS must not be referenced directly.
+        # Phase 4C2B adds DurableGenieSessionAdapterError as an approved local
+        # import inside _persist_new_durable_conversation (same pattern as
+        # the Phase 4C2A _durable_session_lookup local import).
+        # Use a word-boundary check so the error subclass does not trigger.
+        assert not re.search(r'\bDurableGenieSessionAdapter\b', text), (
+            f"DurableGenieSessionAdapter class referenced directly in {path}"
+        )
 
 
 def test_runtime_factory_receives_settings_environment_mapping(

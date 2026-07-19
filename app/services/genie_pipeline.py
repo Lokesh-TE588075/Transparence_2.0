@@ -155,6 +155,10 @@ _MSG_DURABLE_LOOKUP_UNAVAILABLE = (
     "I wasn't able to complete that request. "
     "Please try again in a moment."
 )
+_MSG_DURABLE_WRITEBACK_FAILED = (
+    "I wasn't able to complete that request. "
+    "Please try again in a moment."
+)
 
 
 class _OwnerKeyContractError(Exception):
@@ -176,6 +180,17 @@ class _DurableLookupUnavailableError(Exception):
     unavailability or when no confirmed snapshot exists.  Processing
     MUST NOT proceed without confirmed durable state when durable mode
     is enabled.  Fallback to custom pipeline is prohibited.
+    """
+
+
+class _DurableWritebackError(Exception):
+    """Internal-only exception for durable writeback persistence failures.
+
+    Raised when creation or binding of the durable conversation record
+    fails after a successful Genie turn on a MISS lookup outcome.
+    The caller clears the newly established in-memory Genie mapping and
+    returns a sanitized error response.  Custom-pipeline fallback is
+    prohibited.
     """
 
 
@@ -372,10 +387,25 @@ class GeniePipeline:
                 app_conversation_id=app_conversation_id,
             )
 
-            return self._run_inner(
+            # Phase 4C2B: capture result so the post-execution writeback can
+            # run after ALL shape-validation retries have completed.  Only the
+            # final Genie conversation ID (present in the result dict) is ever
+            # persisted; intermediate discarded Genie conversations are not.
+            _inner_result = self._run_inner(
                 user_message, app_conversation_id, start_time, execution_time_ms,
                 _durable_recovered=(_lookup_outcome == _DurableLookupOutcome.RECOVERED),
             )
+            # Persist durable record only on a confirmed MISS outcome
+            if _lookup_outcome == _DurableLookupOutcome.MISS:
+                return self._maybe_persist_durable_writeback(
+                    result=_inner_result,
+                    owner_key=owner_key,
+                    frontend_conversation_id=frontend_conversation_id,
+                    app_conversation_id=app_conversation_id,
+                    start_time=start_time,
+                    execution_time_ms=execution_time_ms,
+                )
+            return _inner_result
 
         except GenieTimeoutError as exc:
             _exc_str = str(exc)[:300]
@@ -1428,6 +1458,236 @@ class GeniePipeline:
         return {
             "status":            "error",
             "message":           _MSG_DURABLE_LOOKUP_UNAVAILABLE,
+            "is_table":          False,
+            "table_data":        None,
+            "row_count":         0,
+            "preview_row_count": 0,
+            "returned_row_count": 0,
+            "total_row_count": None,
+            "export_row_count": None,
+            "display_row_limit": self._table_display_row_limit,
+            "download_key":      None,
+            "export_id":         None,
+            "export_status":     None,
+            "export_mode":       None,
+            "execution_time_ms": elapsed_ms,
+            "conversation_id":   app_conversation_id,
+            "clarification":     None,
+            "source":                  "genie",
+            "genie_conversation_id":   None,
+            "genie_message_id":        None,
+            "generated_sql":           None,
+            "suggested_questions":     [],
+            "has_visualization":       False,
+            "visualization":           None,
+            "attachment_types":        [],
+            "debug_info":              None,
+            "fallback_recommended":    False,
+        }
+
+    # -------------------------------------------------------------------------
+    # PHASE 4C2B: POST-EXECUTION DURABLE WRITEBACK
+    # -------------------------------------------------------------------------
+
+    def _maybe_persist_durable_writeback(
+        self,
+        *,
+        result: Dict[str, Any],
+        owner_key: Optional[str],
+        frontend_conversation_id: Optional[str],
+        app_conversation_id: str,
+        start_time: float,
+        execution_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        """Persist a new durable conversation record on a confirmed MISS.
+
+        Called only when:
+          - The durable lookup returned MISS.
+          - _run_inner has returned (all shape retries complete).
+
+        Eligibility gates (any False -> return result unchanged):
+          - result status is "success".
+          - shape_retry_exhausted is not set.
+          - genie_conversation_id is present in the result.
+          - owner_key is a non-empty string.
+          - frontend_conversation_id is a non-empty string.
+
+        On writeback failure: clears the newly established in-memory Genie
+        mapping and returns a sanitized no-fallback error response.
+        """
+        # Eligibility: only persist for a clean successful Genie turn
+        if result.get("status") != "success":
+            return result
+        if result.get("shape_retry_exhausted"):
+            return result
+        final_genie_conv_id = result.get("genie_conversation_id")
+        if not final_genie_conv_id:
+            return result
+        if not owner_key or not isinstance(owner_key, str):
+            return result
+        if not frontend_conversation_id or not isinstance(frontend_conversation_id, str):
+            return result
+
+        try:
+            self._persist_new_durable_conversation(
+                owner_key=owner_key,
+                frontend_conversation_id=frontend_conversation_id,
+                final_genie_conversation_id=final_genie_conv_id,
+                app_conversation_id=app_conversation_id,
+            )
+        except _DurableWritebackError:
+            # Fail closed: clear the newly established in-memory mapping so
+            # the request does not continue as an unpersisted in-memory-only
+            # conversation.  Do NOT delete an existing durable record.
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_writeback_error_response(
+                app_conversation_id, elapsed_ms
+            )
+        except Exception:  # noqa: BLE001
+            # Any unexpected failure in writeback: fail closed, no fallback.
+            try:
+                self._store.reset_genie_mapping(app_conversation_id)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed_ms = (
+                execution_time_ms
+                if execution_time_ms is not None
+                else int((time.monotonic() - start_time) * 1000)
+            )
+            return self._build_durable_writeback_error_response(
+                app_conversation_id, elapsed_ms
+            )
+
+        return result
+
+    def _persist_new_durable_conversation(
+        self,
+        *,
+        owner_key: str,
+        frontend_conversation_id: str,
+        final_genie_conversation_id: str,
+        app_conversation_id: str,
+    ) -> None:
+        """Create and bind a new durable conversation record.
+
+        Accesses the adapter exclusively through the attached runtime bundle.
+        Never accesses the repository directly.
+        No values stored on the pipeline instance.
+
+        Raises _DurableWritebackError on any persistence failure.
+        """
+        # --- Gate: bundle must be enabled ---
+        bundle = getattr(self, "_durable_session_runtime_bundle", None)
+        if bundle is None or not getattr(bundle, "enabled", False):
+            raise _DurableWritebackError("Durable bundle is not enabled.")
+
+        adapter = getattr(bundle, "adapter", None)
+        if adapter is None:
+            raise _DurableWritebackError("Durable adapter is unavailable.")
+
+        # --- Import adapter types locally (same pattern as _durable_session_lookup) ---
+        from app.services.durable_genie_session_adapter import (
+            DurableGenieSessionKey,
+            DurableGenieSessionUnavailableError,
+            DurableGenieSessionVersionConflictError,
+            DurableGenieSessionAdapterError,
+        )
+
+        # --- Build key ---
+        try:
+            durable_key = DurableGenieSessionKey(
+                owner_user_id_hash=owner_key,
+                frontend_conversation_id=frontend_conversation_id,
+            )
+        except (ValueError, TypeError) as exc:
+            raise _DurableWritebackError("Invalid durable key components.") from exc
+
+        # --- Get or create the durable record ---
+        try:
+            lookup_result = adapter.get_or_create(durable_key)
+        except DurableGenieSessionUnavailableError as exc:
+            raise _DurableWritebackError("Durable session unavailable.") from exc
+        except DurableGenieSessionAdapterError as exc:
+            raise _DurableWritebackError("Durable adapter error.") from exc
+        except Exception as exc:
+            raise _DurableWritebackError("Durable get-or-create failed.") from exc
+
+        record = lookup_result.record
+
+        # --- Inspect existing binding ---
+        existing_genie_id = record.genie_conversation_id
+        if existing_genie_id == final_genie_conversation_id:
+            # Idempotent success: already bound to the same ID
+            return
+        if existing_genie_id is not None:
+            # Different binding already exists: fail closed, never overwrite
+            raise _DurableWritebackError(
+                "Durable record is already bound to a different Genie conversation."
+            )
+
+        # --- Bind: CAS using the record's current version ---
+        try:
+            bound_record = adapter.bind_genie_conversation(
+                durable_key,
+                final_genie_conversation_id,
+                expected_version=record.version,
+            )
+        except DurableGenieSessionVersionConflictError:
+            # One reload retry: check whether a concurrent caller already bound
+            try:
+                reloaded = adapter.load(durable_key)
+            except Exception as exc:
+                raise _DurableWritebackError(
+                    "Durable reload after conflict failed."
+                ) from exc
+            if reloaded is None:
+                raise _DurableWritebackError(
+                    "Durable record disappeared after conflict."
+                )
+            reloaded_id = reloaded.record.genie_conversation_id
+            if reloaded_id == final_genie_conversation_id:
+                # Idempotent success: another caller bound the same ID
+                return
+            # Different ID or still unbound: fail closed
+            raise _DurableWritebackError(
+                "Durable record conflict: different or missing binding after reload."
+            )
+        except DurableGenieSessionUnavailableError as exc:
+            raise _DurableWritebackError("Durable session unavailable during bind.") from exc
+        except DurableGenieSessionAdapterError as exc:
+            raise _DurableWritebackError("Durable adapter error during bind.") from exc
+        except Exception as exc:
+            raise _DurableWritebackError("Durable bind failed.") from exc
+
+        # --- Confirm the returned record contains the expected binding ---
+        if bound_record.genie_conversation_id != final_genie_conversation_id:
+            raise _DurableWritebackError(
+                "Durable bind returned unexpected Genie conversation ID."
+            )
+
+    def _build_durable_writeback_error_response(
+        self,
+        app_conversation_id: str,
+        elapsed_ms: int,
+    ) -> Dict[str, Any]:
+        """Build a sanitized no-fallback error response for writeback failures.
+
+        Sets fallback_recommended=False: the request must not be routed to
+        the custom pipeline after a durable persistence failure.
+        No ownership values, repository details, SQL, or internal exceptions
+        are included.
+        """
+        return {
+            "status":            "error",
+            "message":           _MSG_DURABLE_WRITEBACK_FAILED,
             "is_table":          False,
             "table_data":        None,
             "row_count":         0,

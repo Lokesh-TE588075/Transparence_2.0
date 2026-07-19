@@ -544,19 +544,35 @@ class TestLookupMiss:
         assert len(client.start_calls) == 1
         assert len(client.send_calls) == 0
 
-    def test_miss_no_durable_mutation(self):
-        """Lookup miss → no create/bind/update/delete on adapter."""
+    def test_miss_no_lifecycle_mutation(self):
+        """Lookup miss → Phase 4C2B writeback (get_or_create+bind are now approved).
+
+        Only lifecycle-mutating operations remain prohibited on MISS:
+        update_last_genie_message, delete, touch, set_status.
+        get_or_create and bind_genie_conversation ARE called by Phase 4C2B.
+        """
         pipeline, _, _, adapter = self._make_miss_pipeline()
-        adapter.get_or_create = MagicMock(side_effect=AssertionError("create"))
-        adapter.bind_genie_conversation = MagicMock(side_effect=AssertionError("bind"))
-        adapter.update_last_genie_message = MagicMock(side_effect=AssertionError("update"))
-        adapter.delete = MagicMock(side_effect=AssertionError("delete"))
+        # Lifecycle mutations remain prohibited
+        adapter.update_last_genie_message = MagicMock(
+            side_effect=AssertionError("update prohibited"))
+        adapter.delete = MagicMock(
+            side_effect=AssertionError("delete prohibited"))
+        adapter.touch = MagicMock(
+            side_effect=AssertionError("touch prohibited"))
+        adapter.set_status = MagicMock(
+            side_effect=AssertionError("set_status prohibited"))
         result = pipeline.run(
             "show shipments", _APP_CONV_ID,
             owner_key=_VALID_OWNER_KEY,
             frontend_conversation_id=_FRONTEND_CONV_ID,
         )
+        # Phase 4C2B: MISS + Genie success → writeback runs → success result
         assert result["status"] == "success"
+        # Confirm the lifecycle-only traps were never triggered
+        adapter.update_last_genie_message.assert_not_called()
+        adapter.delete.assert_not_called()
+        adapter.touch.assert_not_called()
+        adapter.set_status.assert_not_called()
 
     def test_miss_response_contract(self):
         """Lookup miss → normal response with required fields."""
