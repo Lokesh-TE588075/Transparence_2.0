@@ -53,3 +53,16 @@ Genie ID, record version, or exception text appears in any HTTP response or log 
 
 When trusted identity is disabled (`trusted_identity is None`), the endpoint returns
 **503** immediately — anonymous/default resets are never permitted.
+
+## Owner Isolation
+
+The durable conversation key is `(owner_user_id_hash, frontend_conversation_id)`.
+Two owners sharing the same `frontend_conversation_id` hold distinct records.
+Owner B cannot reset Owner A’s record even if they supply the same frontend ID.
+
+## What Reset Does Not Do
+
+- It does **not** call `adapter.delete()` — a hard-delete from the repository is never performed.
+- It does **not** emit a Genie API request.
+- It does **not** trigger the custom pipeline fallback.
+- It does **not** modify any other user’s session or record.
