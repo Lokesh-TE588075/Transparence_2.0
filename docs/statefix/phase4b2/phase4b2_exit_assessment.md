@@ -43,8 +43,12 @@ pipeline) is safe to begin.
 - `tests/test_chat_trusted_identity_extraction.py` (42 tests)
 
 ### Narrowly modified test files
-- `tests/test_request_owner_identity.py` (1 assertion updated: allow runtime wrapper import in chat.py)
-- `tests/test_owner_identity_secret_configuration.py` (2 assertions updated: allow runtime wrapper import; 1 pre-existing hyphen guard added)
+- `tests/test_request_owner_identity.py` (1 assertion narrowed: allow runtime wrapper
+  import in chat.py while still prohibiting direct core module import)
+- `tests/test_owner_identity_secret_configuration.py` (2 assertions narrowed: Tests 14
+  and 17 updated to allow the Phase 4B2 runtime wrapper import; Test 18 received a
+  comment-only reformatting — the all-hyphen guard code was unchanged, confirmed by
+  GitHub API comparison between a74a021 and 461ad84)
 
 ## Files NOT changed
 
@@ -79,15 +83,16 @@ intended durable owner key; it will be plumbed into the Genie pipeline in Phase 
 
 ## Test results
 
-| Suite | Result |
-|---|---|
-| Focused runtime | 64 passed |
-| Focused chat integration | 42 passed |
-| Identity phase combined (4 files) | 214 passed |
-| Complete non-live (excluding 4 smoke files) | 1669 passed |
-| Skipped | 0 |
-| Failures | 0 |
-| Collection errors | 0 |
+| Suite | Files | Result |
+|---|---|---|
+| Focused runtime | 1 | 64 passed |
+| Focused chat integration | 1 | 42 passed |
+| Identity phase combined | 4 | 214 passed |
+| Exact Phase 4B1 combined + 4B2 | 18 | 842 passed |
+| Complete non-live (excluding 4 smoke files) | all | 1669 passed |
+| Skipped | — | 0 |
+| Failures | — | 0 |
+| Collection errors | — | 0 |
 
 ## No deployment
 
