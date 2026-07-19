@@ -30,6 +30,7 @@ from enum import Enum
 from typing import Optional
 
 from app.services.conversation_repository import ConversationStatus
+from app.services.process_local_conversation_key import is_valid_process_local_key
 from app.services.durable_genie_session_adapter import (
     DurableGenieSessionAdapter,
     DurableGenieSessionKey,
@@ -161,6 +162,7 @@ class ConversationResetCoordinator:
         *,
         owner_user_id_hash: str,
         frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """Execute the durable reset flow.
 
@@ -169,7 +171,15 @@ class ConversationResetCoordinator:
         owner_user_id_hash
             Exactly 64 lowercase hexadecimal characters.
         frontend_conversation_id
-            Validated via DurableGenieSessionKey contract.
+            Validated via DurableGenieSessionKey contract.  Used exclusively
+            to construct the durable repository key together with
+            ``owner_user_id_hash``.  Never used for process-local removal.
+        process_local_conversation_key
+            Opaque owner-scoped local key produced by
+            ``build_process_local_conversation_key()``.  Must match the
+            pattern ``^plc_v1_[0-9a-f]{64}$``.  Used exclusively to remove
+            the process-local GenieSessionStore entry.  Never used for the
+            durable repository key.
 
         Returns
         -------
@@ -189,15 +199,20 @@ class ConversationResetCoordinator:
         """
         # --- Input validation ---
         self._validate_owner_hash(owner_user_id_hash)
+        self._validate_process_local_key(process_local_conversation_key)
         key = self._build_key(owner_user_id_hash, frontend_conversation_id)
 
         # --- Load authoritative state ---
         lookup = self._authoritative_load(key)
 
         if lookup is not None:
-            return self._handle_existing_record(key, lookup, frontend_conversation_id)
+            return self._handle_existing_record(
+                key, lookup, process_local_conversation_key
+            )
         else:
-            return self._handle_missing_record(key, frontend_conversation_id)
+            return self._handle_missing_record(
+                key, process_local_conversation_key
+            )
 
     # -----------------------------------------------------------------------
     # Input validation
@@ -212,6 +227,13 @@ class ConversationResetCoordinator:
         if not _OWNER_HASH_PATTERN.match(owner_user_id_hash):
             raise ResetCoordinatorInvalidInputError(
                 "Owner identifier validation failed."
+            )
+
+    def _validate_process_local_key(self, process_local_conversation_key: str) -> None:
+        """Validate process-local key: must match plc_v1_ output format."""
+        if not is_valid_process_local_key(process_local_conversation_key):
+            raise ResetCoordinatorInvalidInputError(
+                "Process-local key validation failed."
             )
 
     def _build_key(
@@ -265,7 +287,7 @@ class ConversationResetCoordinator:
         self,
         key: DurableGenieSessionKey,
         lookup: GenieSessionLookupResult,
-        frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """Handle reset when an authoritative record exists."""
         record = lookup.record
@@ -273,11 +295,11 @@ class ConversationResetCoordinator:
 
         if status == ConversationStatus.ACTIVE:
             return self._transition_active_to_reset(
-                key, record.version, frontend_conversation_id
+                key, record.version, process_local_conversation_key
             )
 
         # RESET, STALE, or EXPIRED — already inactive
-        self._remove_local_session(frontend_conversation_id)
+        self._remove_local_session(process_local_conversation_key)
         return ResetResult(
             success=True,
             outcome=ResetOutcome.ALREADY_INACTIVE,
@@ -287,7 +309,7 @@ class ConversationResetCoordinator:
         self,
         key: DurableGenieSessionKey,
         expected_version: int,
-        frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """CAS transition from ACTIVE to RESET."""
         try:
@@ -297,7 +319,9 @@ class ConversationResetCoordinator:
                 expected_version=expected_version,
             )
         except DurableGenieSessionVersionConflictError:
-            return self._handle_version_conflict(key, frontend_conversation_id)
+            return self._handle_version_conflict(
+                key, process_local_conversation_key
+            )
         except DurableGenieSessionUnavailableError as exc:
             raise ResetCoordinatorUnavailableError(
                 "Durable state is temporarily unavailable."
@@ -314,7 +338,7 @@ class ConversationResetCoordinator:
             )
 
         # Durable success confirmed — now remove local session
-        self._remove_local_session(frontend_conversation_id)
+        self._remove_local_session(process_local_conversation_key)
         return ResetResult(
             success=True,
             outcome=ResetOutcome.RESET,
@@ -327,7 +351,7 @@ class ConversationResetCoordinator:
     def _handle_missing_record(
         self,
         key: DurableGenieSessionKey,
-        frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """Handle reset when no authoritative record exists."""
         # Call get_or_create exactly once
@@ -353,11 +377,11 @@ class ConversationResetCoordinator:
         if record.status == ConversationStatus.ACTIVE:
             # Fresh ACTIVE record — transition to RESET
             return self._transition_to_reset_tombstone(
-                key, record.version, frontend_conversation_id
+                key, record.version, process_local_conversation_key
             )
 
         # Another request already made this key non-active (RESET, STALE, EXPIRED)
-        self._remove_local_session(frontend_conversation_id)
+        self._remove_local_session(process_local_conversation_key)
         return ResetResult(
             success=True,
             outcome=ResetOutcome.TOMBSTONE_CREATED,
@@ -367,7 +391,7 @@ class ConversationResetCoordinator:
         self,
         key: DurableGenieSessionKey,
         expected_version: int,
-        frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """Transition a freshly-created ACTIVE to RESET for tombstone."""
         try:
@@ -377,7 +401,9 @@ class ConversationResetCoordinator:
                 expected_version=expected_version,
             )
         except DurableGenieSessionVersionConflictError:
-            return self._handle_version_conflict(key, frontend_conversation_id)
+            return self._handle_version_conflict(
+                key, process_local_conversation_key
+            )
         except DurableGenieSessionUnavailableError as exc:
             raise ResetCoordinatorUnavailableError(
                 "Durable state is temporarily unavailable."
@@ -393,7 +419,7 @@ class ConversationResetCoordinator:
                 "An internal error occurred."
             )
 
-        self._remove_local_session(frontend_conversation_id)
+        self._remove_local_session(process_local_conversation_key)
         return ResetResult(
             success=True,
             outcome=ResetOutcome.TOMBSTONE_CREATED,
@@ -406,7 +432,7 @@ class ConversationResetCoordinator:
     def _handle_version_conflict(
         self,
         key: DurableGenieSessionKey,
-        frontend_conversation_id: str,
+        process_local_conversation_key: str,
     ) -> ResetResult:
         """Handle version conflict: reload at most once."""
         reload_result = self._reload_after_conflict(key)
@@ -426,7 +452,7 @@ class ConversationResetCoordinator:
             ConversationStatus.EXPIRED,
         ):
             # Idempotent success — already non-active
-            self._remove_local_session(frontend_conversation_id)
+            self._remove_local_session(process_local_conversation_key)
             return ResetResult(
                 success=True,
                 outcome=ResetOutcome.ALREADY_INACTIVE,
@@ -471,14 +497,16 @@ class ConversationResetCoordinator:
     # Local session removal
     # -----------------------------------------------------------------------
 
-    def _remove_local_session(self, frontend_conversation_id: str) -> None:
-        """Remove the process-local session. Non-throwing for valid input."""
+    def _remove_local_session(self, process_local_conversation_key: str) -> None:
+        """Remove the process-local session using the opaque local key.
+
+        Non-throwing: an unexpected exception from remove_session does NOT
+        reverse the authoritative durable RESET.  The session will be cleaned
+        up on the next TTL expiry cycle.
+        """
         try:
-            self._session_store.remove_session(frontend_conversation_id)
+            self._session_store.remove_session(process_local_conversation_key)
         except Exception:
-            # Structurally non-throwing: if remove_session raises
-            # unexpectedly, we do NOT reverse the durable RESET.
-            # The session will be cleaned up on next expiry cycle.
             logger.warning(
                 "Local session removal encountered an unexpected condition."
             )

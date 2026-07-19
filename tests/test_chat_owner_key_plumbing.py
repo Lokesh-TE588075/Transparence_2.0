@@ -321,10 +321,16 @@ class TestEnabledPath:
         _run_chat(request, body, resolver_return=identity, genie_instance=genie)
         # owner_key comes from the trusted identity, not conversation_id
         assert genie.calls[0]["owner_key"] == _VALID_HASH
-        # app_conversation_id is still session_id:frontend_conversation_id
-        assert genie.calls[0]["app_conversation_id"] == "sess-xyz:frontend-conv-99"
-        # owner_key did NOT replace or alter the session-key construction
-        assert _VALID_HASH not in genie.calls[0]["app_conversation_id"]
+        # Phase 4C4B3A: app_conversation_id is now the opaque owner-scoped local key
+        app_conv_id = genie.calls[0]["app_conversation_id"]
+        assert app_conv_id.startswith("plc_v1_")
+        assert len(app_conv_id) == 7 + 64  # prefix + 64 hex chars
+        # Raw inputs must not appear in the opaque key
+        assert _VALID_HASH not in app_conv_id
+        assert "sess-xyz" not in app_conv_id
+        assert "frontend-conv-99" not in app_conv_id
+        # Raw frontend ID is still passed separately
+        assert genie.calls[0]["frontend_conversation_id"] == "frontend-conv-99"
 
     # Test 17: owner key cannot be overridden from legacy email headers
     def test_owner_key_not_from_legacy_headers(self):
@@ -352,7 +358,10 @@ class TestEnabledPath:
         body = _make_body(message="delayed shipments", conversation_id="conv-99")
         _run_chat(request, body, resolver_return=identity, genie_instance=genie)
         assert genie.calls[0]["user_message"] == "delayed shipments"
-        assert genie.calls[0]["app_conversation_id"] == "s1:conv-99"
+        # Phase 4C4B3A: app_conversation_id is now the opaque owner-scoped local key
+        app_conv_id = genie.calls[0]["app_conversation_id"]
+        assert app_conv_id.startswith("plc_v1_")
+        assert len(app_conv_id) == 7 + 64  # prefix + 64 hex chars
 
     # Test 20: identity remains attached to request.state
     def test_identity_remains_on_request_state(self):

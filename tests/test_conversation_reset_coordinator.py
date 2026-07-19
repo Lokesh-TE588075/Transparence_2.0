@@ -53,6 +53,10 @@ from app.services.conversation_reset_coordinator import (
     ResetOutcome,
     ResetResult,
 )
+from app.services.process_local_conversation_key import (
+    build_process_local_conversation_key,
+    is_valid_process_local_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,20 @@ _VALID_OWNER = "a" * 64  # 64 lowercase hex chars
 _VALID_OWNER_B = "b" * 64
 _VALID_FRONTEND_ID = "frontend-conv-001"
 _VALID_FRONTEND_ID_B = "frontend-conv-002"
+_SESSION_ID = "test-session-001"
+
+# Opaque process-local keys derived from the above constants.
+# Used as the process_local_conversation_key argument to coord.reset().
+_VALID_LOCAL_KEY = build_process_local_conversation_key(
+    owner_user_id_hash=_VALID_OWNER,
+    session_id=_SESSION_ID,
+    frontend_conversation_id=_VALID_FRONTEND_ID,
+)
+_VALID_LOCAL_KEY_B = build_process_local_conversation_key(
+    owner_user_id_hash=_VALID_OWNER_B,
+    session_id=_SESSION_ID,
+    frontend_conversation_id=_VALID_FRONTEND_ID,
+)
 
 
 def _make_bundle() -> ConversationRepositoryBundle:
@@ -134,6 +152,7 @@ class TestInputValidation:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
 
@@ -143,6 +162,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash="abc123",
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorInvalidInputError:
@@ -154,6 +174,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash="A" * 64,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorInvalidInputError:
@@ -165,6 +186,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash="",
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorInvalidInputError:
@@ -176,6 +198,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id="",
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorInvalidInputError:
@@ -187,6 +210,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id="user@example.com",
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorInvalidInputError:
@@ -214,6 +238,7 @@ class TestInputValidation:
         result_a = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result_a.success is True
 
@@ -233,6 +258,7 @@ class TestInputValidation:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         r = repr(result)
         assert _VALID_OWNER not in r
@@ -244,6 +270,7 @@ class TestInputValidation:
             coord.reset(
                 owner_user_id_hash="bad",
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
         except ResetCoordinatorInvalidInputError as e:
             r = repr(e)
@@ -266,11 +293,12 @@ class TestExistingActive:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "genie-123")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-123")
 
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.RESET
@@ -291,6 +319,7 @@ class TestExistingActive:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
 
@@ -308,6 +337,7 @@ class TestExistingActive:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         reloaded = adapter.load(key)
@@ -327,6 +357,7 @@ class TestExistingActive:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         reloaded = adapter.load(key)
@@ -339,18 +370,19 @@ class TestExistingActive:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, _ = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "genie-abc")
-        store.update_context(_VALID_FRONTEND_ID, last_intent="AGGREGATION")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-abc")
+        store.update_context(_VALID_LOCAL_KEY, last_intent="AGGREGATION")
 
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
 
         # Local session completely gone
-        assert store.get_session(_VALID_FRONTEND_ID) is None
-        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) is None
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) is None
 
 
 # =============================================================================
@@ -368,11 +400,12 @@ class TestExistingInactive:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, _ = _setup_record_with_status(adapter, ConversationStatus.RESET)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "genie-old")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-old")
 
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
@@ -389,6 +422,7 @@ class TestExistingInactive:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         # Version unchanged — no set_status was called
@@ -406,6 +440,7 @@ class TestExistingInactive:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
@@ -421,6 +456,7 @@ class TestExistingInactive:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
@@ -432,14 +468,15 @@ class TestExistingInactive:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, _ = _setup_record_with_status(adapter, ConversationStatus.STALE)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "genie-stale")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-stale")
 
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
-        assert store.get_session(_VALID_FRONTEND_ID) is None
+        assert store.get_session(_VALID_LOCAL_KEY) is None
 
 
 # =============================================================================
@@ -460,6 +497,7 @@ class TestMissingTombstone:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.TOMBSTONE_CREATED
@@ -473,6 +511,7 @@ class TestMissingTombstone:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.TOMBSTONE_CREATED
@@ -494,6 +533,7 @@ class TestMissingTombstone:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         key = DurableGenieSessionKey(
@@ -513,10 +553,12 @@ class TestMissingTombstone:
         r1 = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         r2 = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert r1.success is True
         assert r2.success is True
@@ -541,6 +583,7 @@ class TestMissingTombstone:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
@@ -588,6 +631,7 @@ class TestMissingTombstone:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorUnavailableError:
@@ -609,6 +653,7 @@ class TestMissingTombstone:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorUnavailableError:
@@ -624,6 +669,7 @@ class TestMissingTombstone:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert result.success is True
 
@@ -660,7 +706,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-1")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-1")
 
         original_load = adapter.load
         load_count = [0]
@@ -685,6 +731,7 @@ class TestConflictHandling:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         assert result.success is True
@@ -700,7 +747,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-keep")
 
         original_load = adapter.load
 
@@ -717,12 +764,13 @@ class TestConflictHandling:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
         # Local session removed
-        assert store.get_session(_VALID_FRONTEND_ID) is None
+        assert store.get_session(_VALID_LOCAL_KEY) is None
 
     def test_25_reload_stale_succeeds_idempotently(self):
         """Conflict → reload shows STALE → idempotent success, session removed."""
@@ -732,7 +780,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-stale")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-stale")
 
         def conflict_with_stale(k, status, **kwargs):
             # Concurrent staleness-marker beats us
@@ -747,11 +795,12 @@ class TestConflictHandling:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
-        assert store.get_session(_VALID_FRONTEND_ID) is None
+        assert store.get_session(_VALID_LOCAL_KEY) is None
 
     def test_26_reload_expired_succeeds_idempotently(self):
         """Conflict → reload shows EXPIRED → idempotent success, session removed."""
@@ -761,7 +810,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-exp")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-exp")
 
         def conflict_with_expired(k, status, **kwargs):
             # Concurrent expiry beats us
@@ -776,11 +825,12 @@ class TestConflictHandling:
         result = coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
 
         assert result.success is True
         assert result.outcome == ResetOutcome.ALREADY_INACTIVE
-        assert store.get_session(_VALID_FRONTEND_ID) is None
+        assert store.get_session(_VALID_LOCAL_KEY) is None
 
     def test_27_reload_active_returns_conflict(self):
         """Conflict → reload shows ACTIVE → conflict error, session retained."""
@@ -790,7 +840,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-keep")
 
         # Patch set_status to conflict without changing state (remains ACTIVE)
         def conflict_no_mutation(k, status, **kwargs):
@@ -802,13 +852,14 @@ class TestConflictHandling:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorConflictError:
             pass
 
         # Session retained
-        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) == "g-keep"
 
     def test_28_reload_none_returns_conflict(self):
         """Conflict → reload returns None → conflict error, session retained."""
@@ -818,7 +869,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-keep")
 
         original_load = adapter.load
         load_count = [0]
@@ -839,13 +890,14 @@ class TestConflictHandling:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorConflictError:
             pass
 
         assert load_count[0] == 2  # initial + one reload
-        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) == "g-keep"
 
     def test_29_reload_unavailable_returns_unavailable(self):
         """Conflict → reload unavailable → unavailable error, session retained."""
@@ -855,7 +907,7 @@ class TestConflictHandling:
         coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
 
         key, record = _setup_active_record(adapter)
-        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "g-keep")
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "g-keep")
 
         original_load = adapter.load
         load_count = [0]
@@ -876,13 +928,14 @@ class TestConflictHandling:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorUnavailableError:
             pass
 
         assert load_count[0] == 2
-        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "g-keep"
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) == "g-keep"
 
     def test_30_no_cas_retry_loop(self):
         """set_status called exactly once; no second CAS attempt."""
@@ -905,6 +958,7 @@ class TestConflictHandling:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
         except (ResetCoordinatorConflictError, ResetCoordinatorUnavailableError):
             pass
@@ -941,6 +995,7 @@ class TestMutationProhibitions:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert delete_called[0] is False
 
@@ -963,6 +1018,7 @@ class TestMutationProhibitions:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert bind_called[0] is False
 
@@ -985,6 +1041,7 @@ class TestMutationProhibitions:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert update_called[0] is False
 
@@ -1007,6 +1064,7 @@ class TestMutationProhibitions:
         coord.reset(
             owner_user_id_hash=_VALID_OWNER,
             frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
         )
         assert touch_called[0] is False
 
@@ -1130,6 +1188,7 @@ class TestAdditionalCoverage:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorUnavailableError:
@@ -1150,6 +1209,7 @@ class TestAdditionalCoverage:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
             assert False, "Should have raised"
         except ResetCoordinatorUnavailableError:
@@ -1175,6 +1235,7 @@ class TestAdditionalCoverage:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
         except ResetCoordinatorUnavailableError:
             pass
@@ -1201,12 +1262,328 @@ class TestAdditionalCoverage:
             coord.reset(
                 owner_user_id_hash=_VALID_OWNER,
                 frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
             )
         except ResetCoordinatorConflictError:
             pass
 
         # Session retained
         assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "genie-keep"
+
+
+# =============================================================================
+# PHASE 4C4B3A: PROCESS-LOCAL KEY EXPLICIT TESTS (new tests 1-14)
+# =============================================================================
+
+
+class TestProcessLocalKeyContract:
+    """Phase 4C4B3A: 14 explicit tests for the corrected coordinator interface.
+
+    These tests prove the key contract separation between the durable
+    repository key (owner_hash + frontend_id) and the process-local session
+    key (opaque plc_v1_ digest).
+    """
+
+    # ---------- helpers -------------------------------------------------------
+
+    @staticmethod
+    def _make() -> tuple:
+        """Return (adapter, store, coord) with a clean in-memory backing."""
+        bundle = _make_bundle()
+        adapter = _make_adapter(bundle)
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+        return adapter, store, coord
+
+    # ---------- test 1 --------------------------------------------------------
+
+    def test_plk_01_durable_record_uses_raw_frontend_id(self):
+        """1. Coordinator durable record is keyed by owner_hash + frontend_id."""
+        adapter, store, coord = self._make()
+        # Create and reset
+        coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+        # Authoritative record must exist under the durable key
+        durable_key = DurableGenieSessionKey(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+        )
+        result = adapter.load(durable_key)
+        assert result is not None
+        assert result.record.status == ConversationStatus.RESET
+        # Confirm durable record carries the raw frontend ID
+        assert result.record.frontend_conversation_id == _VALID_FRONTEND_ID
+
+    # ---------- test 2 --------------------------------------------------------
+
+    def test_plk_02_local_removal_uses_opaque_key_not_frontend_id(self):
+        """2. GenieSessionStore removal uses the opaque key, not the raw frontend ID."""
+        adapter, store, coord = self._make()
+        _setup_active_record(adapter)
+
+        # Populate session under opaque key
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-xyz")
+        # Also populate under raw frontend ID (must NOT be removed)
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "genie-frontend-only")
+
+        coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        # Opaque-key session removed
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+        # Raw frontend_id session untouched
+        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "genie-frontend-only"
+
+    # ---------- test 3 --------------------------------------------------------
+
+    def test_plk_03_session_under_opaque_key_physically_removed(self):
+        """3. Session stored under opaque key is physically removed after success."""
+        adapter, store, coord = self._make()
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "genie-remove-me")
+        store.update_context(_VALID_LOCAL_KEY, last_intent="AGGREGATION", last_entities=["US"])
+
+        coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+        assert store.get_context_snapshot(_VALID_LOCAL_KEY) == {}
+
+    # ---------- test 4 --------------------------------------------------------
+
+    def test_plk_04_session_under_raw_frontend_id_not_touched(self):
+        """4. Session stored only under raw frontend ID is never removed by coordinator."""
+        adapter, store, coord = self._make()
+        _setup_active_record(adapter)
+
+        # Store ONLY under the raw frontend ID, NOT the opaque key
+        store.set_genie_conversation_id(_VALID_FRONTEND_ID, "should-survive")
+
+        coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        # Raw frontend_id session must NOT have been removed
+        assert store.get_genie_conversation_id(_VALID_FRONTEND_ID) == "should-survive"
+
+    # ---------- test 5 --------------------------------------------------------
+
+    def test_plk_05_another_owners_session_untouched(self):
+        """5. Another owner's opaque session key remains untouched after reset."""
+        adapter, store, coord = self._make()
+        _setup_active_record(adapter)
+
+        # Owner A's opaque key
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "owner-a-session")
+        # Owner B's opaque key (different owner, same session + frontend)
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY_B, "owner-b-session")
+
+        # Reset owner A
+        coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        # Owner A's session removed
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+        # Owner B's session untouched
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY_B) == "owner-b-session"
+
+    # ---------- test 6 --------------------------------------------------------
+
+    def test_plk_06_invalid_process_local_key_rejected(self):
+        """6. Invalid process-local key (not plc_v1_ format) is rejected."""
+        _, _, coord = self._make()
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key="not-a-valid-key",
+            )
+            assert False, "Should have raised"
+        except ResetCoordinatorInvalidInputError:
+            pass
+
+    # ---------- test 7 --------------------------------------------------------
+
+    def test_plk_07_raw_owner_hash_cannot_be_passed_as_local_key(self):
+        """7. Raw owner hash (64 hex chars, no plc_v1_ prefix) is rejected."""
+        _, _, coord = self._make()
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_OWNER,  # raw hash, wrong format
+            )
+            assert False, "Should have raised"
+        except ResetCoordinatorInvalidInputError:
+            pass
+
+    # ---------- test 8 --------------------------------------------------------
+
+    def test_plk_08_raw_session_id_cannot_be_passed_as_local_key(self):
+        """8. Raw session ID string cannot satisfy the plc_v1_ format requirement."""
+        _, _, coord = self._make()
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key="test-session-001",
+            )
+            assert False, "Should have raised"
+        except ResetCoordinatorInvalidInputError:
+            pass
+
+    # ---------- test 9 --------------------------------------------------------
+
+    def test_plk_09_raw_frontend_id_cannot_be_passed_as_local_key(self):
+        """9. Raw frontend conversation ID cannot satisfy the plc_v1_ format requirement."""
+        _, _, coord = self._make()
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_FRONTEND_ID,  # raw ID, not opaque
+            )
+            assert False, "Should have raised"
+        except ResetCoordinatorInvalidInputError:
+            pass
+
+    # ---------- test 10 -------------------------------------------------------
+
+    def test_plk_10_durable_failure_retains_opaque_local_session(self):
+        """10. Durable set_status failure must NOT remove the opaque local session."""
+        adapter, store, coord = self._make()
+        _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "retain-on-failure")
+
+        def fail_set_status(k, status, **kwargs):
+            raise DurableGenieSessionUnavailableError("down")
+
+        adapter.set_status = fail_set_status
+
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
+            )
+        except ResetCoordinatorUnavailableError:
+            pass
+
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) == "retain-on-failure"
+
+    # ---------- test 11 -------------------------------------------------------
+
+    def test_plk_11_successful_tombstone_removes_opaque_session(self):
+        """11. Successful tombstone creation (missing → RESET) removes the opaque session."""
+        adapter, store, coord = self._make()
+        # No pre-existing durable record
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "tombstone-session")
+
+        result = coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        assert result.success is True
+        assert result.outcome == ResetOutcome.TOMBSTONE_CREATED
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+
+    # ---------- test 12 -------------------------------------------------------
+
+    def test_plk_12_conflict_success_removes_opaque_session(self):
+        """12. Conflict → reload shows RESET → local opaque session is removed."""
+        bundle = _make_bundle()
+        adapter = _make_adapter(bundle)
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+
+        key, record = _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "conflict-session")
+
+        def conflict_mutate_to_reset(k, status, **kwargs):
+            bundle.repository.set_status(
+                _VALID_OWNER, record.conversation_id,
+                ConversationStatus.RESET, expected_version=record.version,
+            )
+            raise DurableGenieSessionVersionConflictError("conflict")
+
+        adapter.set_status = conflict_mutate_to_reset
+
+        result = coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+
+        assert result.success is True
+        assert store.get_session(_VALID_LOCAL_KEY) is None
+
+    # ---------- test 13 -------------------------------------------------------
+
+    def test_plk_13_conflict_failure_retains_opaque_session(self):
+        """13. Conflict → reload shows ACTIVE → local opaque session is retained."""
+        adapter, store, coord = self._make()
+        _setup_active_record(adapter)
+        store.set_genie_conversation_id(_VALID_LOCAL_KEY, "active-conflict-retain")
+
+        def always_conflict(k, status, **kwargs):
+            raise DurableGenieSessionVersionConflictError("conflict")
+
+        adapter.set_status = always_conflict
+
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key=_VALID_LOCAL_KEY,
+            )
+        except ResetCoordinatorConflictError:
+            pass
+
+        assert store.get_genie_conversation_id(_VALID_LOCAL_KEY) == "active-conflict-retain"
+
+    # ---------- test 14 -------------------------------------------------------
+
+    def test_plk_14_result_and_exceptions_expose_no_local_key(self):
+        """14. ResetResult repr and coordinator exceptions expose no local key value."""
+        adapter, store, coord = self._make()
+        # Success case
+        result = coord.reset(
+            owner_user_id_hash=_VALID_OWNER,
+            frontend_conversation_id=_VALID_FRONTEND_ID,
+            process_local_conversation_key=_VALID_LOCAL_KEY,
+        )
+        r = repr(result)
+        assert _VALID_LOCAL_KEY not in r
+        assert _VALID_OWNER not in r
+        assert _VALID_FRONTEND_ID not in r
+
+        # Error case — invalid local key
+        try:
+            coord.reset(
+                owner_user_id_hash=_VALID_OWNER,
+                frontend_conversation_id=_VALID_FRONTEND_ID,
+                process_local_conversation_key="invalid-key",
+            )
+        except ResetCoordinatorInvalidInputError as exc:
+            e_repr = repr(exc)
+            assert "invalid-key" not in e_repr
+            assert _VALID_OWNER not in e_repr
+            assert _VALID_FRONTEND_ID not in e_repr
 
 
 # =============================================================================

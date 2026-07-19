@@ -185,12 +185,27 @@ class TestExplicitFrontendId:
         _run_chat(request, body, resolver_return=_make_identity(), genie_instance=genie)
         assert len(genie.calls) == 1
 
-    def test_app_conversation_id_is_session_colon_frontend(self):
+    def test_app_conversation_id_is_opaque_owner_scoped_key(self):
+        """Phase 4C4B3A: When identity is enabled, app_conversation_id is the opaque plc_v1_ key."""
+        from app.services.process_local_conversation_key import (
+            build_process_local_conversation_key,
+            is_valid_process_local_key,
+        )
         genie = _CapturingGenie()
         request = _make_request(session_id=_SESSION_ID)
         body = _make_body(conversation_id=_EXPLICIT_FRONTEND_ID)
         _run_chat(request, body, resolver_return=_make_identity(), genie_instance=genie)
-        assert genie.calls[0]["app_conversation_id"] == f"{_SESSION_ID}:{_EXPLICIT_FRONTEND_ID}"
+        app_conv_id = genie.calls[0]["app_conversation_id"]
+        assert is_valid_process_local_key(app_conv_id)
+        # Must not be the raw session:frontend composite
+        assert app_conv_id != f"{_SESSION_ID}:{_EXPLICIT_FRONTEND_ID}"
+        # Must equal the independently computed expected key
+        expected = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_HASH,
+            session_id=_SESSION_ID,
+            frontend_conversation_id=_EXPLICIT_FRONTEND_ID,
+        )
+        assert app_conv_id == expected
 
     def test_frontend_conversation_id_passed_separately(self):
         genie = _CapturingGenie()
@@ -224,12 +239,24 @@ class TestGeneratedFrontendId:
         assert genie.calls[0]["frontend_conversation_id"] == _GENERATED_FRONTEND_ID
 
     def test_app_conversation_id_uses_generated(self):
+        from app.services.process_local_conversation_key import (
+            build_process_local_conversation_key,
+            is_valid_process_local_key,
+        )
         genie = _CapturingGenie()
         request = _make_request(session_id=_SESSION_ID)
         body = _make_body(conversation_id=None)
         _run_chat(request, body, resolver_return=_make_identity(), genie_instance=genie,
                   generated_conv_id=_GENERATED_FRONTEND_ID)
-        assert genie.calls[0]["app_conversation_id"] == f"{_SESSION_ID}:{_GENERATED_FRONTEND_ID}"
+        # Phase 4C4B3A: app_conversation_id is now the opaque owner-scoped local key
+        app_conv_id = genie.calls[0]["app_conversation_id"]
+        assert is_valid_process_local_key(app_conv_id)
+        expected = build_process_local_conversation_key(
+            owner_user_id_hash=_VALID_HASH,
+            session_id=_SESSION_ID,
+            frontend_conversation_id=_GENERATED_FRONTEND_ID,
+        )
+        assert app_conv_id == expected
 
     def test_response_uses_generated_id(self):
         request = _make_request()
@@ -249,8 +276,9 @@ class TestGeneratedFrontendId:
         assert genie.calls[0]["frontend_conversation_id"] == _GENERATED_FRONTEND_ID
         # Response returned the same generated ID
         assert response.conversation_id == _GENERATED_FRONTEND_ID
-        # app_conversation_id also uses it
-        assert _GENERATED_FRONTEND_ID in genie.calls[0]["app_conversation_id"]
+        # Phase 4C4B3A: app_conversation_id is opaque plc_v1_ key — does not contain raw ID
+        assert genie.calls[0]["app_conversation_id"].startswith("plc_v1_")
+        assert len(genie.calls[0]["app_conversation_id"]) == 7 + 64
 
 
 # ===========================================================================

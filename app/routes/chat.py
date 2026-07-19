@@ -47,6 +47,12 @@ from app.services.request_owner_identity_runtime import (
     resolve_request_owner_identity,
 )
 
+# --- Phase 4C4B3A: Opaque owner-scoped process-local conversation key ---
+from app.services.process_local_conversation_key import (
+    build_process_local_conversation_key,
+    ProcessLocalConversationKeyError,
+)
+
 # --- Phase 7B: New accuracy pipeline (feature-flag controlled) ---
 from app.config import settings as _app_settings
 
@@ -277,9 +283,27 @@ async def chat(request: Request, body: ChatRequest):
                     else None
                 )
 
+                # Phase 4C4B3A: Owner-scoped opaque process-local key.
+                # When trusted identity is enabled, derive an opaque digest from
+                # (owner_hash, session_id, frontend_conversation_id) so that two
+                # different trusted owners sharing the same session cookie and
+                # frontend ID cannot collide in GenieSessionStore.
+                # When identity is disabled, preserve the legacy session:frontend
+                # key so that existing multi-user cookie isolation is unchanged.
+                # The raw frontend_conversation_id is ALWAYS passed separately so
+                # the durable repository layer can use it without parsing the key.
+                if _trusted_identity is not None:
+                    _process_local_key = build_process_local_conversation_key(
+                        owner_user_id_hash=_trusted_identity.owner_user_id_hash,
+                        session_id=session_id,
+                        frontend_conversation_id=frontend_conversation_id,
+                    )
+                else:
+                    _process_local_key = server_conversation_key
+
                 genie_result = _genie_pl.run(
                     user_message=user_message,
-                    app_conversation_id=server_conversation_key,
+                    app_conversation_id=_process_local_key,
                     owner_key=_owner_key,
                     frontend_conversation_id=frontend_conversation_id,
                 )
@@ -357,6 +381,22 @@ async def chat(request: Request, body: ChatRequest):
                     server_conversation_key,
                 )
                 # Fall through to USE_NEW_ACCURACY_PIPELINE / old pipeline below
+
+            except ProcessLocalConversationKeyError:
+                # Phase 4C4B3A: Key validation failure is always a hard error;
+                # never fall through to the custom pipeline fallback.
+                logger.error(
+                    "Genie backend error for conv=%s: Process-local conversation key input validation failed.",
+                    server_conversation_key,
+                )
+                return ChatResponse(
+                    status="error",
+                    message="I wasn't able to complete that request. Please try again.",
+                    conversation_id=frontend_conversation_id,
+                    execution_time_ms=_elapsed_ms(start_time),
+                    source="genie",
+                    fallback_recommended=False,
+                )
 
             except Exception as _genie_exc:
                 _genie_err_str = str(_genie_exc)[:500]
