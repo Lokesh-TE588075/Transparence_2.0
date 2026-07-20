@@ -158,13 +158,13 @@ def test_feature_flag_exists(env_by_name: Dict[str, Dict[str, Any]]):
     )
 
 
-def test_feature_flag_is_disabled(env_by_name: Dict[str, Dict[str, Any]]):
-    """Test 7 — ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY must be 'false'."""
+def test_feature_flag_is_enabled(env_by_name: Dict[str, Dict[str, Any]]):
+    """Test 7 — ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY must be 'true'."""
     entry = env_by_name.get(_ENV_VAR_FLAG, {})
     actual = entry.get("value")
-    assert actual == "false", (
-        f"{_ENV_VAR_FLAG!r} must be 'false', got {actual!r}. "
-        "Do not enable this flag until Phase 4B2 integration is complete."
+    assert actual == "true", (
+        f"{_ENV_VAR_FLAG!r} must be 'true', got {actual!r}. "
+        "Controlled remediation requires trusted owner identity to be active."
     )
 
 
@@ -207,16 +207,16 @@ def test_lakebase_endpoint_name_value_from_unchanged(
 
 
 @pytest.mark.parametrize("var_name,expected_value", [
-    ("ENABLE_DURABLE_GENIE_SESSION_ADAPTER", "false"),
-    ("CONVERSATION_REPOSITORY_BACKEND", "memory"),
-    ("ENABLE_LAKEBASE_CONVERSATION_REPOSITORY", "false"),
+    ("ENABLE_DURABLE_GENIE_SESSION_ADAPTER", "true"),
+    ("CONVERSATION_REPOSITORY_BACKEND", "lakebase"),
+    ("ENABLE_LAKEBASE_CONVERSATION_REPOSITORY", "true"),
 ])
-def test_persistence_flags_remain_disabled(
+def test_persistence_flags_match_controlled_architecture(
     var_name: str,
     expected_value: str,
     env_by_name: Dict[str, Dict[str, Any]],
 ):
-    """Test 10 — Phase 3C persistence flags must remain at their disabled defaults."""
+    """Test 10 — Controlled remediation must activate durable Lakebase-backed persistence."""
     entry = env_by_name.get(var_name, {})
     assert entry, f"{var_name!r} is missing from app.yaml"
     actual = entry.get("value")
@@ -447,27 +447,13 @@ def test_requirements_txt_unchanged():
 # ---------------------------------------------------------------------------
 
 
-def test_no_deployment_config_enables_feature():
-    """Test 21 — No deployment config file enables ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY."""
-    # Check app.yaml (already tested via test_feature_flag_is_disabled)
+def test_deployment_config_enables_feature():
+    """Test 21 — app.yaml enables ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY for the controlled remediation."""
     raw = _APP_YAML.read_text(encoding="utf-8")
-    # Confirm it does not appear with value 'true'
     enabled_pattern = re.compile(
         r"ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY.*?value:\s*[\"']?true[\"']?",
         re.DOTALL,
     )
-    assert not enabled_pattern.search(raw), (
-        "app.yaml must not enable ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"
+    assert enabled_pattern.search(raw), (
+        "app.yaml must enable ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"
     )
-    # Also check for any .env files that might override
-    env_files = list((_REPO_ROOT).glob(".env*"))
-    for ef in env_files:
-        if ef.name in (".env.example", ".env.template"):
-            continue
-        content = ef.read_text(encoding="utf-8")
-        if "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY" in content:
-            assert "true" not in content.split(
-                "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"
-            )[1].split("\n")[0], (
-                f"{ef.name} enables ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"
-            )

@@ -931,12 +931,11 @@ def test_67_genie_session_store_unchanged() -> None:
     assert "durable_genie_session_runtime_factory" not in text
 
 
-def test_68_app_yaml_flags_default_safely() -> None:
+def test_68_app_yaml_flags_match_controlled_architecture() -> None:
     text = pathlib.Path("app.yaml").read_text(encoding="utf-8")
     assert "ENABLE_DURABLE_GENIE_SESSION_ADAPTER" in text
     assert "CONVERSATION_REPOSITORY_BACKEND" in text
     assert "ENABLE_LAKEBASE_CONVERSATION_REPOSITORY" in text
-    # Verify safe defaults by line proximity (name line followed by value: "false"/"memory")
     lines = text.splitlines()
     adapter_flag_val = None
     backend_val = None
@@ -961,11 +960,11 @@ def test_68_app_yaml_flags_default_safely() -> None:
                     break
         i += 1
     assert adapter_flag_val is not None, "ENABLE_DURABLE_GENIE_SESSION_ADAPTER has no value"
-    assert "false" in adapter_flag_val, f"Expected 'false', got: {adapter_flag_val}"
+    assert "true" in adapter_flag_val, f"Expected 'true', got: {adapter_flag_val}"
     assert backend_val is not None, "CONVERSATION_REPOSITORY_BACKEND has no value"
-    assert "memory" in backend_val, f"Expected 'memory', got: {backend_val}"
+    assert "lakebase" in backend_val, f"Expected 'lakebase', got: {backend_val}"
     assert lakebase_flag_val is not None, "ENABLE_LAKEBASE_CONVERSATION_REPOSITORY has no value"
-    assert "false" in lakebase_flag_val, f"Expected 'false', got: {lakebase_flag_val}"
+    assert "true" in lakebase_flag_val, f"Expected 'true', got: {lakebase_flag_val}"
 
 
 def test_69_app_yaml_retains_lakebase_endpoint_name_value_from() -> None:

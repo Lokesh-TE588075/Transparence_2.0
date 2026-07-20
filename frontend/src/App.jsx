@@ -16,7 +16,11 @@ import {
   mapResetError,
   isMountedSafe,
 } from "./utils/conversationResetLifecycle";
-import { loadLifecycleState, saveLifecycleState } from "./utils/conversationLifecyclePersistence";
+import {
+  loadLifecycleState,
+  saveLifecycleState,
+  isValidConversationId,
+} from "./utils/conversationLifecyclePersistence";
 
 // Generate a unique conversation ID.
 function _newConvId() {
@@ -33,18 +37,73 @@ async function resetConversation(frontendConversationId) {
   return fetch(url, init);
 }
 
+function _restorePersistedConversations(persistedState) {
+  if (!persistedState || !Array.isArray(persistedState.conversations)) return [];
+
+  const restored = [];
+  const seenIds = new Set();
+
+  for (const entry of persistedState.conversations) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (!isValidConversationId(entry.id) || seenIds.has(entry.id)) continue;
+
+    seenIds.add(entry.id);
+    restored.push({
+      id: entry.id,
+      title:
+        typeof entry.title === "string" && entry.title.trim().length > 0
+          ? entry.title
+          : "New conversation",
+      messages: [],
+    });
+  }
+
+  return restored;
+}
+
+function _buildInitialLifecycleState() {
+  const persistedState = loadLifecycleState();
+  const restoredConversations = _restorePersistedConversations(persistedState);
+  const hasValidActiveId = isValidConversationId(
+    persistedState?.activeConversationId
+  );
+
+  if (restoredConversations.length === 0 && hasValidActiveId) {
+    restoredConversations.push({
+      id: persistedState.activeConversationId,
+      title: "New conversation",
+      messages: [],
+    });
+  }
+
+  const activeConversationId =
+    hasValidActiveId &&
+    restoredConversations.some(
+      (conversation) => conversation.id === persistedState.activeConversationId
+    )
+      ? persistedState.activeConversationId
+      : restoredConversations[0]?.id;
+
+  if (activeConversationId) {
+    return {
+      activeConversationId,
+      conversations: restoredConversations,
+    };
+  }
+
+  const freshId = _newConvId();
+  return {
+    activeConversationId: freshId,
+    conversations: [{ id: freshId, title: "New conversation", messages: [] }],
+  };
+}
+
 export default function App() {
-  // Restore from browser storage on hard refresh or tab reopen.
-  // Falls back to a fresh ID when no valid persisted state exists.
-  // Storage failure is silent — in-memory lifecycle state is always authoritative.
-  const _initialId = (() => {
-    const _p = loadLifecycleState();
-    return (_p && _p.activeConversationId) ? _p.activeConversationId : _newConvId();
-  })();
-  const [conversations, setConversations] = useState([
-    { id: _initialId, title: "New conversation", messages: [] }
-  ]);
-  const [activeConvId, setActiveConvId] = useState(_initialId);
+  // Restore sidebar metadata from browser storage on hard refresh or tab reopen.
+  // Only conversation identity + titles are restored; message content stays in-memory only.
+  const _initialLifecycle = _buildInitialLifecycleState();
+  const [conversations, setConversations] = useState(_initialLifecycle.conversations);
+  const [activeConvId, setActiveConvId] = useState(_initialLifecycle.activeConversationId);
   const [isLoading, setIsLoading] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [resetError, setResetError] = useState(null);
@@ -53,7 +112,7 @@ export default function App() {
   const [showFeedback, setShowFeedback] = useState(false);
 
   // Step 3: Immediately mutable ref for race-safe async callbacks.
-  const activeConvIdRef = useRef(_initialId);
+  const activeConvIdRef = useRef(_initialLifecycle.activeConversationId);
 
   // Step 4: Synchronous reset lock — prevents same-tick double invocation.
   const resetInFlightRef = useRef(false);

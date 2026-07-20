@@ -47,7 +47,7 @@ env:
     value: "true"
   - name: NEW_PIPELINE_FALLBACK_TO_OLD
     description: "Fall back to legacy pipeline on unhandled errors (safety net)"
-    value: "true"
+    value: "false"
   - name: NEW_PIPELINE_DEBUG
     description: "Enable verbose debug logging for the new pipeline"
     value: "false"
@@ -58,7 +58,7 @@ env:
     value: "true"
   - name: GENIE_FALLBACK_TO_CUSTOM_PIPELINE
     description: "Fall back to custom pipeline if Genie fails"
-    value: "true"
+    value: "false"
   - name: GENIE_SPACE_ID
     description: "Genie Space ID for TransparencE Shipment Intelligence"
     value: "01f17a93e6aa1b97a9da7ef329e15e46"
@@ -149,30 +149,25 @@ env:
     valueFrom: postgres
 
   # -------------------------------------------------------------------------
-  # Phase 3C: Durable Genie session persistence — disabled-by-default flags.
-  # All three entries must remain false/memory until Phase 3D integration is
-  # explicitly activated.  Do not enable without the Phase 3D gate.
+  # Controlled remediation: activate trusted owner identity plus durable Genie
+  # recovery through the Lakebase conversation repository.
+  # CONVERSATION_OWNER_HMAC_SECRET remains secret-bound only; never embed a
+  # plaintext secret value in source control.
   # -------------------------------------------------------------------------
   - name: ENABLE_DURABLE_GENIE_SESSION_ADAPTER
-    description: "Enable the durable Genie session persistence adapter (Phase 3C/3D — disabled by default)"
-    value: "false"
+    description: "Enable the durable Genie session persistence adapter"
+    value: "true"
   - name: CONVERSATION_REPOSITORY_BACKEND
-    description: "Conversation repository backend selection: memory or lakebase (default: memory)"
-    value: "memory"
+    description: "Conversation repository backend selection: memory or lakebase"
+    value: "lakebase"
   - name: ENABLE_LAKEBASE_CONVERSATION_REPOSITORY
-    description: "Allow the Lakebase conversation repository backend to be selected (Phase 3A/3D — disabled by default)"
+    description: "Allow the Lakebase conversation repository backend to be selected"
+    value: "true"
+  - name: CONVERSATION_STATE_CLEANUP_HARD_DELETE
+    description: "Use soft-delete only for conversation cleanup tombstones"
     value: "false"
-
-  # -------------------------------------------------------------------------
-  # Phase 4B1: Owner-Identity HMAC secret — disabled-by-default.
-  # CONVERSATION_OWNER_HMAC_SECRET is injected at runtime via the app secret
-  # resource key 'conversation-owner-hmac-secret' (scope: transparence-owner-identity,
-  # key: conversation-owner-hmac-v1).  Do NOT embed the secret value here.
-  # ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY must remain false until Phase 4B2
-  # integration is explicitly activated after full test gate.
-  # -------------------------------------------------------------------------
   - name: CONVERSATION_OWNER_HMAC_SECRET
     valueFrom: conversation-owner-hmac-secret
   - name: ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY
-    description: "Enable HMAC-signed request owner identity enforcement (Phase 4B2 — disabled by default)"
-    value: "false"
+    description: "Enable HMAC-signed request owner identity enforcement"
+    value: "true"

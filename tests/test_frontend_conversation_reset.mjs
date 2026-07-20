@@ -35,7 +35,21 @@ function createMockState(initial) {
   let value = initial;
   return { get: () => value, set: (u) => { value = typeof u === "function" ? u(value) : u; } };
 }
-
+function makeLocalStorageMock() {
+  const store = Object.create(null);
+  return {
+    getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+    setItem(key, value) { store[key] = String(value); },
+    removeItem(key) { delete store[key]; },
+    clear() { Object.keys(store).forEach((k) => delete store[k]); },
+  };
+}
+let _lsMock = makeLocalStorageMock();
+globalThis.localStorage = _lsMock;
+function resetStorage() {
+  _lsMock = makeLocalStorageMock();
+  globalThis.localStorage = _lsMock;
+}
 // Simulated handleNewChat using PRODUCTION helpers (mirrors App.jsx logic)
 async function simulateNewChat({ activeConvIdRef, resetInFlightRef, isMountedRef, inactiveSet,
   isResettingState, resetErrorState, conversationsState, fetchMock, activateConversation }) {
@@ -82,6 +96,7 @@ describe("Phase 4C4B4: Frontend Conversation Reset (Production-Linked)", () => {
   let activateConversation, fetchCalls;
 
   beforeEach(() => {
+    resetStorage();
     activeConvIdRef = createMockRef("conv-001");
     resetInFlightRef = createMockRef(false);
     isMountedRef = createMockRef(true);

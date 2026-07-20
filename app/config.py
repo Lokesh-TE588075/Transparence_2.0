@@ -93,7 +93,6 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://localhost:3000",
         "http://localhost:8000",
-        "*",  # Databricks Apps uses proxy
     ]
 
     # --- App Meta ---
@@ -111,7 +110,6 @@ class Settings(BaseSettings):
     USE_DELTA_CONVERSATION_STATE: bool = False
     CONVERSATION_STATE_TABLE_NAME: str = "onedata_fn_ion_dev.ion_l0_raw.shipmate_conversation_state"
     CONVERSATION_STATE_TTL_HOURS: int = 24
-    CONVERSATION_STATE_CLEANUP_HARD_DELETE: bool = False
     CONVERSATION_STATE_CLEANUP_HARD_DELETE: bool = False
 
     # --- New Accuracy Pipeline Feature Flags (Phase 7B) ---

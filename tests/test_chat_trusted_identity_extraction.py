@@ -758,18 +758,16 @@ class TestBoundaryChecks:
                 f"{path} must not reference request_owner_identity"
             )
 
-    # Test 40: app.yaml unchanged by Phase 4B2
-    def test_app_yaml_unchanged(self):
+    # Test 40: app.yaml enables controlled trusted identity activation
+    def test_app_yaml_controlled_activation(self):
         source = self._src("app.yaml")
-        # ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY remains false
         assert "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY" in source
-        # Flag must remain disabled in app.yaml
         import re
         pattern = re.compile(
-            r"ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY.*?value:\s*[\"']?false[\"']?",
+            r"ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY.*?value:\s*[\"']?true[\"']?",
             re.DOTALL,
         )
-        assert pattern.search(source), "Feature flag must remain false in app.yaml"
+        assert pattern.search(source), "Feature flag must be true in app.yaml"
 
     # Test 41: no durable conversation mutation in chat.py
     def test_no_durable_conversation_mutation_in_chat_py(self):

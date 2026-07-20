@@ -11,12 +11,14 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MODULE_PATH =
   path.resolve(__dirname, "../frontend/src/utils/conversationLifecyclePersistence.js");
+const APP_PATH = path.resolve(__dirname, "../frontend/src/App.jsx");
 
 // ---------------------------------------------------------------------------
 // localStorage mock (globalThis-scoped for production module compatibility)
@@ -72,6 +74,70 @@ function validState(overrides = {}) {
 function storedJson() {
   const raw = globalThis.localStorage.getItem(STORAGE_KEY);
   return raw ? JSON.parse(raw) : null;
+}
+
+function simulateInitialHydration(persistedState, options = {}) {
+  let generatedIdCount = 0;
+  const nextGeneratedId = options.nextGeneratedId || (() => {
+    generatedIdCount += 1;
+    return `generated-conv-${generatedIdCount}`;
+  });
+
+  const restoredConversations = [];
+  const seenIds = new Set();
+  const rawConversations = Array.isArray(persistedState?.conversations)
+    ? persistedState.conversations
+    : [];
+
+  for (const entry of rawConversations) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    if (!isValidConversationId(entry.id) || seenIds.has(entry.id)) continue;
+
+    seenIds.add(entry.id);
+    restoredConversations.push({
+      id: entry.id,
+      title:
+        typeof entry.title === "string" && entry.title.trim().length > 0
+          ? entry.title
+          : "New conversation",
+      messages: [],
+    });
+  }
+
+  const hasValidActiveId = isValidConversationId(
+    persistedState?.activeConversationId
+  );
+
+  if (restoredConversations.length === 0 && hasValidActiveId) {
+    restoredConversations.push({
+      id: persistedState.activeConversationId,
+      title: "New conversation",
+      messages: [],
+    });
+  }
+
+  const activeConversationId =
+    hasValidActiveId &&
+    restoredConversations.some(
+      (conversation) => conversation.id === persistedState.activeConversationId
+    )
+      ? persistedState.activeConversationId
+      : restoredConversations[0]?.id;
+
+  if (activeConversationId) {
+    return {
+      activeConversationId,
+      conversations: restoredConversations,
+      generatedIdCount,
+    };
+  }
+
+  const freshId = nextGeneratedId();
+  return {
+    activeConversationId: freshId,
+    conversations: [{ id: freshId, title: "New conversation", messages: [] }],
+    generatedIdCount,
+  };
 }
 
 // ===========================================================================
@@ -395,30 +461,179 @@ describe("title sanitisation", () => {
     }
   });
 
-  test("non-string title is not stored as raw number", () => {
+  test("non-string title is omitted from storage and hydrates to default title", () => {
     resetStorage();
     saveLifecycleState(
       validState({
-        conversations: [{ id: "conv-001", title: 12345 }],
+        conversations: [{ id: "conv-001", title: { unsafe: true } }],
       })
     );
+
     const raw = storedJson();
-    // Production module must not persist a numeric title as-is;
-    // it may omit the field entirely (undefined) or coerce to a safe string.
-    // Asserting only that it is NOT a raw numeric value.
-    if (raw && raw.conversations.length > 0) {
-      const storedTitle = raw.conversations[0].title;
-      assert.notStrictEqual(
-        typeof storedTitle,
-        "number",
-        "title must not be stored as a raw number"
-      );
-    }
+    assert.ok(raw && raw.conversations.length === 1);
+    assert.deepEqual(raw.conversations[0], { id: "conv-001" });
+    assert.equal(Object.prototype.hasOwnProperty.call(raw.conversations[0], "title"), false);
+    assert.equal(JSON.stringify(raw).includes("[object Object]"), false);
+
+    const restored = simulateInitialHydration(raw);
+    assert.equal(restored.conversations[0].title, "New conversation");
+    assert.deepEqual(Object.keys(raw.conversations[0]).sort(), ["id"]);
   });
 });
 
 // ===========================================================================
-// GROUP 8: Storage-size guard
+// GROUP 8: App.jsx initial hydration (refresh metadata restore)
+// ===========================================================================
+
+describe("App.jsx initial hydration", () => {
+  test("restores multiple sidebar conversations after refresh", () => {
+    const source = readFileSync(APP_PATH, "utf8");
+    assert.ok(source.includes("_buildInitialLifecycleState"));
+    assert.ok(source.includes("_restorePersistedConversations"));
+
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-002",
+      conversations: [
+        { id: "conv-001", title: "Delayed shipments" },
+        { id: "conv-002", title: "China lanes" },
+      ],
+    });
+
+    assert.deepEqual(
+      restored.conversations.map((c) => c.id),
+      ["conv-001", "conv-002"]
+    );
+  });
+
+  test("restores stored conversation titles", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-002",
+      conversations: [
+        { id: "conv-001", title: "Late containers" },
+        { id: "conv-002", title: "Port dwell analysis" },
+      ],
+    });
+
+    assert.deepEqual(
+      restored.conversations.map((c) => c.title),
+      ["Late containers", "Port dwell analysis"]
+    );
+  });
+
+  test("keeps the correct conversation active", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-002",
+      conversations: [
+        { id: "conv-001", title: "A" },
+        { id: "conv-002", title: "B" },
+      ],
+    });
+
+    assert.equal(restored.activeConversationId, "conv-002");
+  });
+
+  test("initializes restored messages as empty arrays", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-001",
+      conversations: [
+        { id: "conv-001", title: "A", messages: [{ id: 1, content: "secret" }] },
+        { id: "conv-002", title: "B", tableData: [{ id: 99 }] },
+      ],
+    });
+
+    assert.ok(restored.conversations.every((c) => Array.isArray(c.messages)));
+    assert.ok(restored.conversations.every((c) => c.messages.length === 0));
+  });
+
+  test("discards invalid stored conversations", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-001",
+      conversations: [
+        null,
+        { id: "user@example.com", title: "Bad" },
+        { id: "conv-001", title: "Valid" },
+        { id: "", title: "Also bad" },
+      ],
+    });
+
+    assert.deepEqual(restored.conversations.map((c) => c.id), ["conv-001"]);
+  });
+
+  test("removes duplicate stored conversations", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-001",
+      conversations: [
+        { id: "conv-001", title: "First" },
+        { id: "conv-001", title: "Duplicate" },
+        { id: "conv-002", title: "Second" },
+      ],
+    });
+
+    assert.deepEqual(
+      restored.conversations.map((c) => c.id),
+      ["conv-001", "conv-002"]
+    );
+    assert.equal(restored.conversations[0].title, "First");
+  });
+
+  test("corrects an active ID that is absent from the restored list", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-missing",
+      conversations: [
+        { id: "conv-001", title: "First" },
+        { id: "conv-002", title: "Second" },
+      ],
+    });
+
+    assert.equal(restored.activeConversationId, "conv-001");
+    assert.equal(restored.generatedIdCount, 0);
+  });
+
+  test("does not generate a second ID when valid persisted state exists", () => {
+    const restored = simulateInitialHydration({
+      activeConversationId: "conv-keep",
+      conversations: [],
+    });
+
+    assert.equal(restored.activeConversationId, "conv-keep");
+    assert.deepEqual(restored.conversations.map((c) => c.id), ["conv-keep"]);
+    assert.equal(restored.generatedIdCount, 0);
+  });
+
+  test("stores no message body or backend payload during lifecycle save", () => {
+    resetStorage();
+    const appConversations = [
+      {
+        id: "conv-001",
+        title: "Visible title",
+        messages: [{ id: 1, role: "user", content: "shipment prompt" }],
+        tableData: [{ shipment_id: "abc" }],
+        generatedSql: "select * from sensitive_table",
+        genieConversationId: "genie-123",
+        queryDescription: "backend payload",
+      },
+    ];
+
+    saveLifecycleState({
+      activeConversationId: "conv-001",
+      conversations: appConversations.map((c) => ({
+        id: c.id,
+        title: typeof c.title === "string" ? c.title : "New conversation",
+      })),
+    });
+
+    const raw = storedJson();
+    assert.deepEqual(raw.conversations, [{ id: "conv-001", title: "Visible title" }]);
+    const json = JSON.stringify(raw);
+    assert.equal(json.includes("shipment prompt"), false);
+    assert.equal(json.includes("sensitive_table"), false);
+    assert.equal(json.includes("genie-123"), false);
+    assert.equal(json.includes("backend payload"), false);
+  });
+});
+
+// ===========================================================================
+// GROUP 9: Storage-size guard
 // ===========================================================================
 
 describe("storage-size guard", () => {
@@ -437,7 +652,7 @@ describe("storage-size guard", () => {
 });
 
 // ===========================================================================
-// GROUP 9: Reset-transition write count
+// GROUP 10: Reset-transition write count
 // ===========================================================================
 
 describe("reset-transition write count", () => {
