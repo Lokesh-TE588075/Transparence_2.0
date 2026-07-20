@@ -16,6 +16,7 @@ import {
   mapResetError,
   isMountedSafe,
 } from "./utils/conversationResetLifecycle";
+import { loadLifecycleState, saveLifecycleState } from "./utils/conversationLifecyclePersistence";
 
 // Generate a unique conversation ID.
 function _newConvId() {
@@ -33,7 +34,13 @@ async function resetConversation(frontendConversationId) {
 }
 
 export default function App() {
-  const _initialId = _newConvId();
+  // Restore from browser storage on hard refresh or tab reopen.
+  // Falls back to a fresh ID when no valid persisted state exists.
+  // Storage failure is silent — in-memory lifecycle state is always authoritative.
+  const _initialId = (() => {
+    const _p = loadLifecycleState();
+    return (_p && _p.activeConversationId) ? _p.activeConversationId : _newConvId();
+  })();
   const [conversations, setConversations] = useState([
     { id: _initialId, title: "New conversation", messages: [] }
   ]);
@@ -58,6 +65,8 @@ export default function App() {
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; };
   }, []);
+
+  useEffect(() => { saveLifecycleState({ activeConversationId: activeConvId, conversations: conversations.map((c) => ({ id: c.id, title: typeof c.title === "string" ? c.title : "New conversation" })) }); }, [activeConvId, conversations]);
 
   // Step 5/10: Defence-in-depth inactive conversation tracking.
   const inactiveConvIdsRef = useRef(new Set());
@@ -118,6 +127,7 @@ export default function App() {
       // Success: generate new ID, activate, REMOVE old from selectable list.
       const newId = _newConvId();
       const newConv = { id: newId, title: "New conversation", messages: [] };
+      saveLifecycleState({ activeConversationId: newId, conversations: [{ id: newId, title: "New conversation" }, ...conversations.filter((c) => c.id !== oldConversationId).map((c) => ({ id: c.id, title: typeof c.title === "string" ? c.title : "New conversation" }))] });
       setConversations(prev => [
         newConv,
         ...prev.filter(item => item.id !== oldConversationId),
