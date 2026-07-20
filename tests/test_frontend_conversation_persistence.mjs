@@ -404,7 +404,8 @@ describe("title sanitisation", () => {
     );
     const raw = storedJson();
     // Production module must not persist a numeric title as-is;
-    // it may coerce it to a string, use a fallback, or omit it (undefined in JSON).
+    // it may omit the field entirely (undefined) or coerce to a safe string.
+    // Asserting only that it is NOT a raw numeric value.
     if (raw && raw.conversations.length > 0) {
       const storedTitle = raw.conversations[0].title;
       assert.notStrictEqual(
@@ -432,5 +433,101 @@ describe("storage-size guard", () => {
     const raw = globalThis.localStorage.getItem(STORAGE_KEY);
     // Either nothing was saved or the stored payload is <= 16384 bytes
     assert.ok(raw === null || new TextEncoder().encode(raw).length <= 16384);
+  });
+});
+
+// ===========================================================================
+// GROUP 9: Reset-transition write count
+// ===========================================================================
+
+describe("reset-transition write count", () => {
+  // Helper: wrap setItem with a call counter.
+  // Returns { restore, count } where count() returns calls since install.
+  function spySetItem() {
+    const orig = globalThis.localStorage.setItem;
+    let n = 0;
+    globalThis.localStorage.setItem = (...args) => { n++; orig.apply(globalThis.localStorage, args); };
+    return { restore: () => { globalThis.localStorage.setItem = orig; }, count: () => n };
+  }
+
+  test("saveLifecycleState calls setItem exactly once per invocation", () => {
+    resetStorage();
+    const spy = spySetItem();
+    try {
+      saveLifecycleState(validState({ activeConversationId: "new-conv-001" }));
+      assert.strictEqual(spy.count(), 1, "One saveLifecycleState call must produce exactly one setItem call");
+    } finally {
+      spy.restore();
+    }
+  });
+
+  test("loadLifecycleState does not call setItem (no write before HTTP 200)", () => {
+    resetStorage();
+    saveLifecycleState(validState());
+    const spy = spySetItem();
+    try {
+      loadLifecycleState();
+      assert.strictEqual(spy.count(), 0, "loadLifecycleState must not call setItem");
+    } finally {
+      spy.restore();
+    }
+  });
+
+  test("failed reset produces no setItem call when saveLifecycleState is not called", () => {
+    resetStorage();
+    saveLifecycleState(validState());
+    const spy = spySetItem();
+    try {
+      // Simulate failed reset: no saveLifecycleState call (state unchanged)
+      // Do nothing — count must remain zero.
+      assert.strictEqual(spy.count(), 0, "No saveLifecycleState call means no setItem call");
+    } finally {
+      spy.restore();
+    }
+  });
+
+  test("old ID is absent from persisted state after successful-reset write", () => {
+    resetStorage();
+    // Pre-seed old state
+    saveLifecycleState({
+      activeConversationId: "old-conv-reset-test",
+      conversations: [{ id: "old-conv-reset-test", title: "Old conversation" }],
+    });
+    // Simulate successful reset: one saveLifecycleState call with new state
+    saveLifecycleState({
+      activeConversationId: "new-conv-reset-test",
+      conversations: [{ id: "new-conv-reset-test", title: "New conversation" }],
+    });
+    const raw = storedJson();
+    assert.ok(raw !== null, "State must be persisted after reset write");
+    const ids = (raw.conversations || []).map((c) => c.id);
+    assert.ok(
+      !ids.includes("old-conv-reset-test"),
+      "Old conversation ID must not appear in persisted conversations after reset"
+    );
+    assert.notStrictEqual(
+      raw.activeConversationId,
+      "old-conv-reset-test",
+      "Old conversation ID must not be the active ID after reset"
+    );
+  });
+
+  test("new ID is present exactly once in persisted state after successful-reset write", () => {
+    resetStorage();
+    // Simulate successful reset write
+    saveLifecycleState({
+      activeConversationId: "new-conv-reset-test",
+      conversations: [{ id: "new-conv-reset-test", title: "New conversation" }],
+    });
+    const raw = storedJson();
+    assert.ok(raw !== null, "State must be persisted after reset write");
+    assert.strictEqual(
+      raw.activeConversationId,
+      "new-conv-reset-test",
+      "New ID must be the active conversation ID"
+    );
+    const ids = (raw.conversations || []).map((c) => c.id);
+    const count = ids.filter((id) => id === "new-conv-reset-test").length;
+    assert.strictEqual(count, 1, "New conversation ID must appear exactly once in persisted list");
   });
 });

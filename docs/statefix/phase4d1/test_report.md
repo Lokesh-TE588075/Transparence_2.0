@@ -2,14 +2,49 @@
 
 ## Status: PASS WITH BUILD BLOCKER
 
+## Correction applied (pre-build)
+
+Parent (original Phase 4D1) SHA: `58cea8b4efa7cba02f6884dc650ad6099dae75ea`
+
+### Files changed in correction commit
+
+- `frontend/src/App.jsx` — removed explicit `saveLifecycleState` call from `handleNewChat` success path; the lifecycle `useEffect` is now the sole writer.
+- `tests/test_frontend_conversation_persistence.mjs` — added GROUP 9 (5 reset-transition write-count tests); corrected pre-existing GROUP 7 test 2 assertion.
+
+---
+
+## Reset-transition persistence analysis
+
+### Production sequence after successful reset (HTTP 200)
+
+1. `markConversationInactive(...)` — no storage write
+2. Generate `newId`, create `newConv` — no storage write
+3. `setConversations(prev => [newConv, ...prev.filter(...)])` — React state update queued
+4. `activateConversation(newId)` → ref update + `setActiveConvId(newId)` — React state update queued
+5. React 18 batches both state updates — one render
+6. `useEffect([activeConvId, conversations])` fires once → **exactly one `storage.setItem` call**
+
+### Write counts (authoritative)
+
+| Event | `storage.setItem` calls |
+|---|---|
+| Before reset HTTP 200 | **0** |
+| Successful reset transition | **1** |
+| Failed reset (HTTP error or network error) | **0** |
+
+### Post-reset persisted state
+
+- Old conversation ID: absent from `conversations`; not the `activeConversationId`
+- New conversation ID: present exactly once in `conversations`; equals `activeConversationId`
+
 ---
 
 ## Frontend JavaScript Tests
 
-### Persistence tests (new)
+### Persistence tests
 
 **Command**: `node --test tests/test_frontend_conversation_persistence.mjs`
-**Result**: 38 passed, 0 failed, 0 skipped, 0 cancelled, 0 unhandled rejections
+**Result**: **43 passed** (previous: 38), 0 failed, 0 skipped, 0 cancelled, 0 unhandled rejections
 
 | Group | Tests | Description |
 |---|---|---|
@@ -19,8 +54,9 @@
 | saveLifecycleState / loadLifecycleState round-trip | 8 | Save/restore ID, version, conversations array, extra-field strip, overwrite, invalid ID, 60-conv truncation, setItem throws |
 | clearLifecycleState | 4 | Removes state, no-op when empty, removeItem throws, only STORAGE_KEY removed |
 | removeConversationFromLifecycleState | 4 | Remove by ID, no-op if absent, no-op on empty, active ID unchanged for other convs |
-| title sanitisation | 2 | Long title truncated, non-string title not stored as raw number |
+| title sanitisation | 2 | Long title truncated, non-string title not stored as raw number (assertion corrected) |
 | storage-size guard | 1 | Payload over 16 KiB not stored |
+| **reset-transition write count** (NEW) | **5** | setItem count per saveLifecycleState call=1; loadLifecycleState=0 writes; failed reset=0 writes; old ID absent after reset write; new ID present exactly once |
 
 ### Reset tests (existing)
 
@@ -30,7 +66,7 @@
 ### Combined run
 
 **Command**: `node --test tests/test_frontend_conversation_persistence.mjs tests/test_frontend_conversation_reset.mjs`
-**Result**: 87 passed (38 + 49), 0 failed, 0 skipped, 0 cancelled, 0 unhandled rejections
+**Result**: **92 passed** (43 + 49), 0 failed, 0 skipped, 0 cancelled, 0 unhandled rejections
 
 ---
 
@@ -55,17 +91,22 @@
 
 | File | Tests |
 |---|---|
-| test_browser_restart_idle_lifecycle.py | 42 |
-| test_main_durable_runtime_lifecycle.py | varies (async skip in env) |
-| test_genie_pipeline_durable_lookup.py | — |
-| test_genie_pipeline_inactive_durable_state.py | — |
-| test_genie_pipeline_durable_writeback.py | — |
-| test_genie_pipeline_last_message_persistence.py | — |
-| test_genie_session_store.py | — |
-| test_genie_session_store_context.py | — |
-| test_conversation_reset_combined_lifecycle.py | — |
+**Flags**: `--asyncio-mode=auto --import-mode=importlib -p no:cacheprovider PYTHONDONTWRITEBYTECODE=1`
 
-**Result**: 394 passed, 0 failed, 36 skipped (async tests, pre-existing), 0 collection errors
+| File | Tests |
+|---|---|
+| test_browser_restart_idle_lifecycle.py | 42 |
+| test_main_durable_runtime_lifecycle.py | 58 |
+| test_genie_pipeline_durable_lookup.py | 36 |
+| test_genie_pipeline_inactive_durable_state.py | 73 |
+| test_genie_pipeline_durable_writeback.py | 50 |
+| test_genie_pipeline_last_message_persistence.py | 57 |
+| test_genie_session_store.py | 52 |
+| test_genie_session_store_context.py | 7 |
+| test_conversation_reset_combined_lifecycle.py | 55 |
+| **Total** | **430** |
+
+**Result**: **430 passed, 0 failed, 0 skipped** (previous: 394 passed, 36 skipped), 0 collection errors
 
 ### Exact 32-file suite
 

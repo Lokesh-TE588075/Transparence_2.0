@@ -125,9 +125,10 @@ export default function App() {
       markConversationInactive(inactiveConvIdsRef.current, oldConversationId);
 
       // Success: generate new ID, activate, REMOVE old from selectable list.
+      // Persistence is handled entirely by the lifecycle useEffect below — no
+      // explicit saveLifecycleState call here so exactly one write occurs.
       const newId = _newConvId();
       const newConv = { id: newId, title: "New conversation", messages: [] };
-      saveLifecycleState({ activeConversationId: newId, conversations: [{ id: newId, title: "New conversation" }, ...conversations.filter((c) => c.id !== oldConversationId).map((c) => ({ id: c.id, title: typeof c.title === "string" ? c.title : "New conversation" }))] });
       setConversations(prev => [
         newConv,
         ...prev.filter(item => item.id !== oldConversationId),

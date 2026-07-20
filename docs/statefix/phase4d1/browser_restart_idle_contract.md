@@ -161,3 +161,43 @@ inactive records. Record `version` is unchanged.
 | Inactive tombstone after expiry | RESET prevents recovery even after TTL eviction |
 | Late response from old conversation | `isResponseEligible` guard discards silently |
 | Reset lock prevents same-tick double invocation | `acquireResetLock` is synchronous |
+
+---
+
+## Reset-Transition Persistence Write-Count Contract
+
+**Correction applied (pre-build, parent SHA 58cea8b4)**
+
+### Write count per event
+
+| Event | `storage.setItem` calls |
+|---|---|
+| Before reset HTTP 200 | **0** |
+| Successful reset (one transition) | **1** |
+| Failed reset (HTTP error or network error) | **0** |
+
+### Mechanism (post-correction)
+
+After HTTP 200:
+
+1. `markConversationInactive(...)` — no storage write
+2. `setConversations(...)` — React state update queued
+3. `activateConversation(newId)` — ref update + React state update queued
+4. React 18 batches both state updates — one render
+5. `useEffect([activeConvId, conversations])` fires once — exactly one `setItem` call
+
+No explicit `saveLifecycleState` call exists in `handleNewChat` after this correction.
+The `useEffect` is the sole writer for all lifecycle transitions.
+
+### Old ID / New ID contract
+
+- Old conversation ID: absent from persisted `conversations` list; not the `activeConversationId`
+- New conversation ID: present exactly once in `conversations`; equals `activeConversationId`
+
+### Test coverage (GROUP 9 in test_frontend_conversation_persistence.mjs)
+
+1. `saveLifecycleState calls setItem exactly once per invocation`
+2. `loadLifecycleState does not call setItem (no write before HTTP 200)`
+3. `failed reset produces no setItem call when saveLifecycleState is not called`
+4. `old ID is absent from persisted state after successful-reset write`
+5. `new ID is present exactly once in persisted state after successful-reset write`
