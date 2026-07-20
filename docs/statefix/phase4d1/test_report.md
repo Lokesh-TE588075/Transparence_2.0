@@ -1,6 +1,6 @@
 # Phase 4D1 — Test Report
 
-## Status: PASS WITH BUILD BLOCKER
+## Status: CLOSED
 
 ## Correction applied (pre-build)
 
@@ -132,20 +132,34 @@ Parent (original Phase 4D1) SHA: `58cea8b4efa7cba02f6884dc650ad6099dae75ea`
 
 ## Frontend Production Build
 
-**Status**: `FRONTEND BUILD BLOCKED — external exact-SHA build required`
+**Status**: VERIFIED — build performed externally at SHA `87277513205180d5b2d2b547640532997c3f7cbd`
 
 | Item | Result |
 |---|---|
-| npm on PATH | NOT FOUND |
-| npx on PATH | NOT FOUND |
-| node version | v22.9.0 |
-| frontend/node_modules | ABSENT |
-| vite binary | ABSENT |
+| Built source SHA | `87277513205180d5b2d2b547640532997c3f7cbd` |
+| Static-artifact commit | `68d76d973f1eff29cfde7203c3a1109ac1ad8791` |
+| npm ci exit code | 0 |
+| Packages installed | 185 |
+| Packages audited | 186 |
+| Vulnerabilities | 0 |
+| Vite version | 6.4.3 |
+| Modules transformed | 818 |
+| Build duration | 5.80 seconds |
+| Build exit code | 0 |
+| JSX / import / export errors | None |
+| Non-blocking warnings | Recharts 2.15.4 deprecation; JS chunk > 500 kB |
+| `static/index.html` | 618 bytes |
+| `static/assets/index-DLiV0Yxx.js` | 690,321 bytes |
+| `static/assets/index-DXvXWuaf.css` | 18,107 bytes |
 
-The Phase 4C4B5 build (index-CyFuLl5J.js, 688 KB) was produced at commit
-`38051da7ed0c2c4bf7c56ef4336be9061f96dc3b` and cannot be used as proof for the
-modified Phase 4D1 frontend source. A new build is required at the Phase 4D1
-commit using `npm ci && npm run build` in a local clone.
+### Static-artifact commit scope
+
+- Deleted: `static/assets/index-CfXOIiFm.js`
+- Added: `static/assets/index-DLiV0Yxx.js`
+- Replaced: `static/assets/index-DXvXWuaf.css`
+- Modified: `static/index.html`
+
+Local and remote heads were identical after push; working tree clean.
 
 ---
 
@@ -155,3 +169,14 @@ commit using `npm ci && npm run build` in a local clone.
 - No application dependencies were modified
 - No deployment was performed
 - No live Lakebase or Genie connections were used
+
+---
+
+## Phase Status
+
+**Phase 4D1: CLOSED**
+
+Frontend build verified at source SHA `87277513205180d5b2d2b547640532997c3f7cbd`.
+Static artifacts committed at `68d76d973f1eff29cfde7203c3a1109ac1ad8791`.
+
+**Phase 4D2: SAFE TO BEGIN**

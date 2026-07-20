@@ -6,7 +6,7 @@ Browser Refresh, Backend Restart and Idle-Recovery Lifecycle
 
 ## Overall Status
 
-**PASS WITH BUILD BLOCKER** (correction applied)
+**CLOSED**
 
 ---
 
@@ -48,7 +48,7 @@ Browser Refresh, Backend Restart and Idle-Recovery Lifecycle
 | Focused lifecycle suite (430, 0 skipped) | PASS |
 | 32-file suite (1473) | PASS |
 | Complete non-live suite (2300) | PASS |
-| Frontend production build | **BLOCKED** |
+| Frontend production build | **PASS** |
 
 ---
 
@@ -107,38 +107,38 @@ Browser Refresh, Backend Restart and Idle-Recovery Lifecycle
 
 ## Frontend Build Status
 
-`FRONTEND BUILD BLOCKED — external exact-SHA build required`
+Build verified externally at SHA `87277513205180d5b2d2b547640532997c3f7cbd`.
 
-The production build must be run in a local clone at the Phase 4D1 commit:
-
-```
-cd frontend
-npm ci
-npm run build
-```
-
-Previous Phase 4C4B5 build (`38051da7...`, index-CyFuLl5J.js, 688 KB) is
-**not** valid proof for the modified Phase 4D1 source.
+| Item | Result |
+|---|---|
+| Built source SHA | `87277513205180d5b2d2b547640532997c3f7cbd` |
+| Static-artifact commit | `68d76d973f1eff29cfde7203c3a1109ac1ad8791` |
+| npm ci exit code | 0 |
+| Vite version | 6.4.3 |
+| Modules transformed | 818 |
+| Build duration | 5.80 s |
+| `static/index.html` | 618 bytes |
+| `static/assets/index-DLiV0Yxx.js` | 690,321 bytes |
+| `static/assets/index-DXvXWuaf.css` | 18,107 bytes |
 
 ---
 
 ## Phase 4D1 Closure Status
 
-**Phase 4D1: NOT CLOSED**
+**Phase 4D1: CLOSED**
 
-Blocking item: external frontend build at Phase 4D1 commit SHA.
+Frontend build verified externally at SHA `87277513205180d5b2d2b547640532997c3f7cbd`.
+Static artifacts committed at `68d76d973f1eff29cfde7203c3a1109ac1ad8791`.
 
 ## Phase 4D2 Readiness
 
-**Phase 4D2: NOT SAFE TO BEGIN**
-
-Phase 4D2 must not start until the Phase 4D1 frontend build completes
-successfully and the produced static assets are committed.
+**Phase 4D2: SAFE TO BEGIN**
 
 ---
 
 ## Commit Details
 
 - Branch: `feature/genie-state-persistence`
-- Parent SHA: `f794e73451633bdb65243efd6c93d01b87e4783e`
-- Commit message: `Validate browser restart and idle conversation recovery`
+- Phase 4D1 initial commit: `58cea8b4efa7cba02f6884dc650ad6099dae75ea`
+- Correction commit (pre-build): `87277513205180d5b2d2b547640532997c3f7cbd`
+- Static-artifact commit (build proof): `68d76d973f1eff29cfde7203c3a1109ac1ad8791`

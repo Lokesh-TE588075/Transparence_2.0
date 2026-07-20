@@ -166,7 +166,9 @@ inactive records. Record `version` is unchanged.
 
 ## Reset-Transition Persistence Write-Count Contract
 
-**Correction applied (pre-build, parent SHA 58cea8b4)**
+**Correction applied — source SHA `87277513205180d5b2d2b547640532997c3f7cbd`, build artifact SHA `68d76d973f1eff29cfde7203c3a1109ac1ad8791`**
+
+**Phase 4D1 CLOSED.**
 
 ### Write count per event
 

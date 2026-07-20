@@ -86,7 +86,17 @@ Chat functionality is unaffected.
 
 | Write site | Condition |
 |---|---|
-| `useEffect` on `[activeConvId, conversations]` | After every React state change (post-render) |
-| Explicit call in `handleNewChat` | Immediately after HTTP 200 success, before React state update |
+| `useEffect` on `[activeConvId, conversations]` | After every React state change (post-render) — sole writer |
+| ~~Explicit call in `handleNewChat`~~ | ~~Removed in Phase 4D1 correction (source SHA `87277513`); duplicate write eliminated~~ |
 
 No `localStorage` writes occur at render time or before an HTTP 200 response.
+
+---
+
+## Phase 4D1 Status
+
+**Phase 4D1: CLOSED**
+
+- Source SHA: `87277513205180d5b2d2b547640532997c3f7cbd`
+- Static-artifact commit: `68d76d973f1eff29cfde7203c3a1109ac1ad8791`
+- Phase 4D2: **SAFE TO BEGIN**
