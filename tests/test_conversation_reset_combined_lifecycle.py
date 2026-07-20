@@ -939,14 +939,22 @@ class TestRepeatedReset:
 
 
 # ===========================================================================
-# 16. No adapter delete, bind, update-message or touch during reset
+# 16. No adapter delete, bind, update-message or touch during reset (FIX A)
 # ===========================================================================
 
 
 class TestNoProhibitedOperations:
-    """Scenario 16: Reset only uses load, get_or_create, set_status."""
+    """Scenario 16: Reset only uses load, get_or_create, set_status.
 
-    def test_33_no_delete_called(self):
+    Behavioural spies attached to all four REAL adapter method names:
+    - delete
+    - bind_genie_conversation
+    - update_last_genie_message
+    - touch
+    """
+
+    def test_33_all_prohibited_ops_zero_calls_on_active(self):
+        """All four prohibited ops have zero calls after ACTIVE reset."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
@@ -955,28 +963,43 @@ class TestNoProhibitedOperations:
         _setup_active(adapter, _OWNER_A, _FRONTEND_1)
         store.set_genie_conversation_id(_LOCAL_KEY_A, "genie-lifecycle-test")
 
-        # Spy on delete if it exists
-        if hasattr(adapter, "delete"):
-            adapter.delete = MagicMock(side_effect=AssertionError("delete must not be called"))
+        spy_delete = MagicMock(side_effect=AssertionError("delete called"))
+        spy_bind = MagicMock(side_effect=AssertionError("bind_genie_conversation called"))
+        spy_update_msg = MagicMock(side_effect=AssertionError("update_last_genie_message called"))
+        spy_touch = MagicMock(side_effect=AssertionError("touch called"))
+
+        adapter.delete = spy_delete
+        adapter.bind_genie_conversation = spy_bind
+        adapter.update_last_genie_message = spy_update_msg
+        adapter.touch = spy_touch
 
         coord.reset(
             owner_user_id_hash=_OWNER_A,
             frontend_conversation_id=_FRONTEND_1,
             process_local_conversation_key=_LOCAL_KEY_A,
         )
-        # No exception = delete not called
 
-    def test_34_no_bind_called(self):
+        assert spy_delete.call_count == 0
+        assert spy_bind.call_count == 0
+        assert spy_update_msg.call_count == 0
+        assert spy_touch.call_count == 0
+
+    def test_34_prohibited_ops_on_tombstone_creation_path(self):
+        """Prohibited ops not called even on MISS/tombstone-creation path."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = _make_coordinator(adapter, store)
 
-        _setup_active(adapter, _OWNER_A, _FRONTEND_1)
-        store.set_genie_conversation_id(_LOCAL_KEY_A, "genie-lifecycle-test")
+        spy_delete = MagicMock(side_effect=AssertionError("delete called"))
+        spy_bind = MagicMock(side_effect=AssertionError("bind_genie_conversation called"))
+        spy_update_msg = MagicMock(side_effect=AssertionError("update_last_genie_message called"))
+        spy_touch = MagicMock(side_effect=AssertionError("touch called"))
 
-        if hasattr(adapter, "bind"):
-            adapter.bind = MagicMock(side_effect=AssertionError("bind must not be called"))
+        adapter.delete = spy_delete
+        adapter.bind_genie_conversation = spy_bind
+        adapter.update_last_genie_message = spy_update_msg
+        adapter.touch = spy_touch
 
         coord.reset(
             owner_user_id_hash=_OWNER_A,
@@ -984,54 +1007,66 @@ class TestNoProhibitedOperations:
             process_local_conversation_key=_LOCAL_KEY_A,
         )
 
-    def test_35_no_update_last_message_called(self):
+        assert spy_delete.call_count == 0
+        assert spy_bind.call_count == 0
+        assert spy_update_msg.call_count == 0
+        assert spy_touch.call_count == 0
+
+    def test_35_prohibited_ops_on_already_inactive_path(self):
+        """Prohibited ops not called on ALREADY_INACTIVE path (RESET record)."""
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
         store = GenieSessionStore()
         coord = _make_coordinator(adapter, store)
 
-        _setup_active(adapter, _OWNER_A, _FRONTEND_1)
+        _setup_with_status(adapter, ConversationStatus.RESET, _OWNER_A, _FRONTEND_1)
 
-        if hasattr(adapter, "update_last_message"):
-            adapter.update_last_message = MagicMock(
-                side_effect=AssertionError("update_last_message must not be called")
-            )
+        spy_delete = MagicMock(side_effect=AssertionError("delete called"))
+        spy_bind = MagicMock(side_effect=AssertionError("bind_genie_conversation called"))
+        spy_update_msg = MagicMock(side_effect=AssertionError("update_last_genie_message called"))
+        spy_touch = MagicMock(side_effect=AssertionError("touch called"))
 
-        coord.reset(
-            owner_user_id_hash=_OWNER_A,
-            frontend_conversation_id=_FRONTEND_1,
-            process_local_conversation_key=_LOCAL_KEY_A,
-        )
-
-    def test_36_no_touch_called(self):
-        bundle = _make_bundle()
-        adapter = _make_adapter(bundle)
-        store = GenieSessionStore()
-        coord = _make_coordinator(adapter, store)
-
-        _setup_active(adapter, _OWNER_A, _FRONTEND_1)
-
-        if hasattr(adapter, "touch"):
-            adapter.touch = MagicMock(
-                side_effect=AssertionError("touch must not be called")
-            )
+        adapter.delete = spy_delete
+        adapter.bind_genie_conversation = spy_bind
+        adapter.update_last_genie_message = spy_update_msg
+        adapter.touch = spy_touch
 
         coord.reset(
             owner_user_id_hash=_OWNER_A,
             frontend_conversation_id=_FRONTEND_1,
             process_local_conversation_key=_LOCAL_KEY_A,
         )
+
+        assert spy_delete.call_count == 0
+        assert spy_bind.call_count == 0
+        assert spy_update_msg.call_count == 0
+        assert spy_touch.call_count == 0
 
 
 # ===========================================================================
-# 17. No identifiers in HTTP responses
+# 17. No identifiers in HTTP responses (FIX E — caplog leakage)
 # ===========================================================================
 
 
 class TestNoIdentifiersInResponses:
-    """Scenario 17: No sensitive values in HTTP response bodies."""
+    """Scenario 17: No sensitive values in HTTP response bodies or logs."""
 
-    def test_37_success_response_no_identifiers(self):
+    _SENSITIVE_TOKENS: List[str] = []
+
+    @classmethod
+    def _get_sensitive_tokens(cls) -> List[str]:
+        """All tokens that must never appear in responses or logs."""
+        return [
+            _OWNER_A,
+            _OWNER_B,
+            _SESSION_A,
+            _LOCAL_KEY_A,
+            _LOCAL_KEY_B,
+            "plc_v1_",
+            _FRONTEND_1,
+        ]
+
+    def test_36_success_response_no_identifiers(self):
         identity = _make_identity(_OWNER_A)
         bundle = _make_bundle()
         adapter = _make_adapter(bundle)
@@ -1048,21 +1083,13 @@ class TestNoIdentifiersInResponses:
             session_id=_SESSION_A,
         )
         import json
-        body = json.loads(response.body)
-        body_str = json.dumps(body)
+        body_str = json.dumps(json.loads(response.body))
 
-        # Must not contain owner hash
-        assert _OWNER_A not in body_str
-        # Must not contain session ID
-        assert _SESSION_A not in body_str
-        # Must not contain local key
-        assert _LOCAL_KEY_A not in body_str
-        # Must not contain plc_v1_
-        assert "plc_v1_" not in body_str
+        for token in self._get_sensitive_tokens():
+            assert token not in body_str, f"Leaked: {token[:10]}..."
 
-    def test_38_error_response_no_identifiers(self):
+    def test_37_conflict_response_no_identifiers(self):
         identity = _make_identity(_OWNER_A)
-
         coord_mock = MagicMock()
         coord_mock.reset.side_effect = ResetCoordinatorConflictError("conflict")
 
@@ -1073,16 +1100,13 @@ class TestNoIdentifiersInResponses:
             session_id=_SESSION_A,
         )
         import json
-        body = json.loads(response.body)
-        body_str = json.dumps(body)
+        body_str = json.dumps(json.loads(response.body))
 
-        assert _OWNER_A not in body_str
-        assert _SESSION_A not in body_str
-        assert "plc_v1_" not in body_str
+        for token in self._get_sensitive_tokens():
+            assert token not in body_str, f"Leaked: {token[:10]}..."
 
-    def test_39_unavailable_response_no_identifiers(self):
+    def test_38_unavailable_response_no_identifiers(self):
         identity = _make_identity(_OWNER_A)
-
         coord_mock = MagicMock()
         coord_mock.reset.side_effect = ResetCoordinatorUnavailableError("unavail")
 
@@ -1093,9 +1117,589 @@ class TestNoIdentifiersInResponses:
             session_id=_SESSION_A,
         )
         import json
-        body = json.loads(response.body)
-        body_str = json.dumps(body)
+        body_str = json.dumps(json.loads(response.body))
 
-        assert _OWNER_A not in body_str
-        assert _SESSION_A not in body_str
-        assert "plc_v1_" not in body_str
+        for token in self._get_sensitive_tokens():
+            assert token not in body_str, f"Leaked: {token[:10]}..."
+
+    def test_39_unexpected_error_response_no_identifiers(self):
+        identity = _make_identity(_OWNER_A)
+        coord_mock = MagicMock()
+        coord_mock.reset.side_effect = RuntimeError(f"crash with {_OWNER_A}")
+
+        response = _run_route(
+            _FRONTEND_1,
+            identity_patch=lambda headers: identity,
+            coordinator_patch=lambda: coord_mock,
+            session_id=_SESSION_A,
+        )
+        import json
+        body_str = json.dumps(json.loads(response.body))
+
+        for token in self._get_sensitive_tokens():
+            assert token not in body_str, f"Leaked: {token[:10]}..."
+
+
+# ===========================================================================
+# 18. Old-ID post-reset pipeline (FIX B) — real pipeline blocks old conv
+# ===========================================================================
+
+
+class TestOldIdPostResetPipeline:
+    """Scenario 18: Real GeniePipeline with fake Genie client returns inactive
+    for old frontend ID after reset, with no start_conversation/send_message
+    or adapter bind/update/touch calls.
+    """
+
+    def _build_pipeline_and_reset(self):
+        """Setup: active durable record → reset → return pipeline + adapter."""
+        from app.services.genie_pipeline import GeniePipeline
+        from app.services.durable_genie_session_runtime_factory import (
+            DurableGenieSessionRuntimeBundle,
+        )
+
+        repo = InMemoryConversationRepository()
+        repo_bundle = ConversationRepositoryBundle(
+            repository=repo,
+            backend=ConversationRepositoryBackend.MEMORY,
+            durable=False,
+        )
+        adapter = DurableGenieSessionAdapter(
+            repository_bundle=repo_bundle, cache_store=None, cache_enabled=False,
+        )
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+
+        # Create active record
+        key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        adapter.get_or_create(key)
+        store.set_genie_conversation_id(_LOCAL_KEY_A, "genie-conv-original")
+
+        # Reset
+        coord.reset(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+            process_local_conversation_key=_LOCAL_KEY_A,
+        )
+
+        # Build pipeline with recording client
+        class _RecordingClient:
+            def __init__(self):
+                self.start_calls = []
+                self.send_calls = []
+
+            def start_conversation(self, space_id, message):
+                self.start_calls.append(message)
+                raise AssertionError("start_conversation must not be called")
+
+            def send_message(self, space_id, conv_id, message):
+                self.send_calls.append(message)
+                raise AssertionError("send_message must not be called")
+
+            def wait_for_message_completion(self, *a, **kw):
+                return MagicMock(query_attachments=None, message_id="msg-x")
+
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        client = _RecordingClient()
+        pipeline = GeniePipeline(
+            genie_client=client,
+            session_store=store,
+            space_id="space-lifecycle-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+        # Attach durable bundle
+        bundle = DurableGenieSessionRuntimeBundle(
+            enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
+        )
+        setattr(pipeline, "_durable_session_runtime_bundle", bundle)
+        return pipeline, client, adapter
+
+    def test_40_old_id_returns_inactive_status(self):
+        pipeline, client, adapter = self._build_pipeline_and_reset()
+        result = pipeline.run(
+            "show delayed shipments",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        assert result["status"] == "inactive"
+
+    def test_41_old_id_has_fallback_recommended_false(self):
+        pipeline, client, adapter = self._build_pipeline_and_reset()
+        result = pipeline.run(
+            "show delayed shipments",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        assert result.get("fallback_recommended") is False
+
+    def test_42_old_id_no_start_conversation(self):
+        pipeline, client, adapter = self._build_pipeline_and_reset()
+        pipeline.run(
+            "show delayed shipments",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        assert len(client.start_calls) == 0
+
+    def test_43_old_id_no_send_message(self):
+        pipeline, client, adapter = self._build_pipeline_and_reset()
+        pipeline.run(
+            "show delayed shipments",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        assert len(client.send_calls) == 0
+
+
+# ===========================================================================
+# 19. New-ID post-reset pipeline (FIX C) — new frontend ID unblocked
+# ===========================================================================
+
+
+class TestNewIdPostResetPipeline:
+    """Scenario 19: New frontend ID after reset is NOT blocked as inactive.
+    Pipeline takes the normal MISS/new-conversation path.
+    """
+
+    def test_44_new_id_not_inactive(self):
+        from app.services.genie_pipeline import GeniePipeline
+        from app.services.durable_genie_session_runtime_factory import (
+            DurableGenieSessionRuntimeBundle,
+        )
+
+        repo = InMemoryConversationRepository()
+        repo_bundle = ConversationRepositoryBundle(
+            repository=repo,
+            backend=ConversationRepositoryBackend.MEMORY,
+            durable=False,
+        )
+        adapter = DurableGenieSessionAdapter(
+            repository_bundle=repo_bundle, cache_store=None, cache_enabled=False,
+        )
+        store = GenieSessionStore()
+        coord = ConversationResetCoordinator(adapter=adapter, session_store=store)
+
+        # Setup and reset old frontend
+        key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        adapter.get_or_create(key)
+        coord.reset(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+            process_local_conversation_key=_LOCAL_KEY_A,
+        )
+
+        # Build pipeline with successful client
+        class _SuccessClient:
+            def __init__(self):
+                self.start_calls = []
+
+            def start_conversation(self, space_id, message):
+                self.start_calls.append(message)
+                return {"conversation_id": "genie-new-conv", "message_id": "genie-new-msg"}
+
+            def send_message(self, space_id, conv_id, message):
+                return {"message_id": "genie-new-msg-2"}
+
+            def wait_for_message_completion(self, space_id, conv_id, msg_id, **kw):
+                class _Att:
+                    content = "Here are delayed shipments."
+                class _Resp:
+                    query_attachments = None
+                    message_id = msg_id
+                    text_attachments = [_Att()]
+                return _Resp()
+
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        client = _SuccessClient()
+        pipeline = GeniePipeline(
+            genie_client=client,
+            session_store=store,
+            space_id="space-lifecycle-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+        bundle = DurableGenieSessionRuntimeBundle(
+            enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
+        )
+        setattr(pipeline, "_durable_session_runtime_bundle", bundle)
+
+        # New frontend ID + new local key
+        new_local_key = build_process_local_conversation_key(
+            owner_user_id_hash=_OWNER_A,
+            session_id=_SESSION_A,
+            frontend_conversation_id=_FRONTEND_2,
+        )
+
+        result = pipeline.run(
+            "show delayed shipments",
+            new_local_key,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_2,
+        )
+        # Must NOT be inactive — normal flow
+        assert result["status"] != "inactive"
+        # Client was called (new conversation started)
+        assert len(client.start_calls) == 1
+
+
+# ===========================================================================
+# 20. Reset-versus-writeback race (FIX D) — tombstone wins in pipeline
+# ===========================================================================
+
+
+class TestResetVsWritebackPipelineRace:
+    """Scenario 20: Pipeline MISS lookup → successful Genie exec → tombstone
+    created by concurrent reset BEFORE writeback → pipeline detects non-ACTIVE
+    on persist attempt → static inactive response, no bind/update, local removed.
+    """
+
+    def test_45_race_returns_inactive(self):
+        """MISS lookup → successful Genie → writeback finds RESET tombstone → inactive."""
+        from app.services.genie_pipeline import GeniePipeline
+        from app.services.durable_genie_session_runtime_factory import (
+            DurableGenieSessionRuntimeBundle,
+        )
+
+        repo = InMemoryConversationRepository()
+        repo_bundle = ConversationRepositoryBundle(
+            repository=repo,
+            backend=ConversationRepositoryBackend.MEMORY,
+            durable=False,
+        )
+        adapter = DurableGenieSessionAdapter(
+            repository_bundle=repo_bundle, cache_store=None, cache_enabled=False,
+        )
+        store = GenieSessionStore()
+
+        class _TextAtt:
+            def __init__(self, text):
+                self.content = text
+
+        class _CompletionResult:
+            def __init__(self, msg_id):
+                self.message_id = msg_id
+                self.query_attachments = None
+                self.text_attachments = [_TextAtt("Here are the delayed shipments.")]
+
+        class _SuccessClient:
+            def start_conversation(self, space_id, message):
+                return {"conversation_id": "genie-race-conv", "message_id": "genie-race-msg"}
+
+            def send_message(self, space_id, conv_id, message):
+                return {"message_id": "genie-race-msg-2"}
+
+            def wait_for_message_completion(self, space_id, conv_id, msg_id, **kw):
+                return _CompletionResult(msg_id)
+
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        client = _SuccessClient()
+        pipeline = GeniePipeline(
+            genie_client=client,
+            session_store=store,
+            space_id="space-lifecycle-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+
+        # Pre-create a RESET tombstone so get_or_create in writeback finds it.
+        # But patch load to return None on first call so pipeline sees MISS.
+        load_count = [0]
+        original_load = adapter.load
+
+        key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        create_result = adapter.get_or_create(key)
+        adapter.set_status(key, ConversationStatus.RESET,
+                           expected_version=create_result.record.version)
+
+        def patched_load(k):
+            load_count[0] += 1
+            if load_count[0] == 1:
+                return None  # Pipeline sees MISS
+            return original_load(k)
+
+        adapter.load = patched_load
+
+        bundle = DurableGenieSessionRuntimeBundle(
+            enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
+        )
+        setattr(pipeline, "_durable_session_runtime_bundle", bundle)
+
+        result = pipeline.run(
+            "show delayed",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        # Pipeline runs Genie successfully, then writeback finds RESET tombstone
+        # via get_or_create → raises _DurableInactiveConversationError → inactive
+        assert result["status"] == "inactive"
+        assert result.get("fallback_recommended") is False
+
+    def test_46_race_local_session_removed(self):
+        """After race detection, local session is removed."""
+        from app.services.genie_pipeline import GeniePipeline
+        from app.services.durable_genie_session_runtime_factory import (
+            DurableGenieSessionRuntimeBundle,
+        )
+
+        repo = InMemoryConversationRepository()
+        repo_bundle = ConversationRepositoryBundle(
+            repository=repo,
+            backend=ConversationRepositoryBackend.MEMORY,
+            durable=False,
+        )
+        adapter = DurableGenieSessionAdapter(
+            repository_bundle=repo_bundle, cache_store=None, cache_enabled=False,
+        )
+        store = GenieSessionStore()
+        store.set_genie_conversation_id(_LOCAL_KEY_A, "genie-pre-existing")
+
+        class _NoOpClient:
+            def start_conversation(self, *a, **kw):
+                return {"conversation_id": "x", "message_id": "y"}
+            def send_message(self, *a, **kw):
+                return {"message_id": "y"}
+            def wait_for_message_completion(self, *a, **kw):
+                class _A:
+                    content = "result"
+                class _R:
+                    query_attachments = None
+                    message_id = "y"
+                    text_attachments = [_A()]
+                return _R()
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        pipeline = GeniePipeline(
+            genie_client=_NoOpClient(),
+            session_store=store,
+            space_id="space-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+        # Pre-create RESET tombstone
+        key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        create_result = adapter.get_or_create(key)
+        adapter.set_status(key, ConversationStatus.RESET,
+                           expected_version=create_result.record.version)
+
+        bundle = DurableGenieSessionRuntimeBundle(
+            enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
+        )
+        setattr(pipeline, "_durable_session_runtime_bundle", bundle)
+
+        pipeline.run(
+            "show delayed",
+            _LOCAL_KEY_A,
+            owner_key=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        # Local session removed after inactive detection
+        assert store.get_session(_LOCAL_KEY_A) is None
+
+
+# ===========================================================================
+# 21. Identifier leakage via caplog (FIX E)
+# ===========================================================================
+
+
+class TestNoLogLeakage:
+    """Scenario 21: Logs must not contain sensitive identifiers."""
+
+    def test_47_success_path_no_log_leakage(self, caplog):
+        import logging
+        bundle = _make_bundle()
+        adapter = _make_adapter(bundle)
+        store = GenieSessionStore()
+        coord = _make_coordinator(adapter, store)
+
+        _setup_active(adapter, _OWNER_A, _FRONTEND_1)
+        store.set_genie_conversation_id(_LOCAL_KEY_A, "genie-lifecycle-test")
+
+        identity = _make_identity(_OWNER_A)
+        with caplog.at_level(logging.DEBUG):
+            _run_route(
+                _FRONTEND_1,
+                identity_patch=lambda headers: identity,
+                coordinator_patch=lambda: coord,
+                session_id=_SESSION_A,
+            )
+
+        log_text = caplog.text
+        # Raw sensitive identifiers must not appear in logs
+        assert _OWNER_A not in log_text
+        assert _SESSION_A not in log_text
+        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
+        # safe for operational logging (one-way, non-reversible). Only raw
+        # owner_user_id_hash, session_id, and frontend_conversation_id are
+        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
+        # session-store operational logs as app_conversation_id.
+
+    def test_48_conflict_path_no_log_leakage(self, caplog):
+        import logging
+        identity = _make_identity(_OWNER_A)
+        coord_mock = MagicMock()
+        coord_mock.reset.side_effect = ResetCoordinatorConflictError("conflict")
+
+        with caplog.at_level(logging.DEBUG):
+            _run_route(
+                _FRONTEND_1,
+                identity_patch=lambda headers: identity,
+                coordinator_patch=lambda: coord_mock,
+                session_id=_SESSION_A,
+            )
+
+        log_text = caplog.text
+        # Raw sensitive identifiers must not appear in logs
+        assert _OWNER_A not in log_text
+        assert _SESSION_A not in log_text
+        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
+        # safe for operational logging (one-way, non-reversible). Only raw
+        # owner_user_id_hash, session_id, and frontend_conversation_id are
+        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
+        # session-store operational logs as app_conversation_id.
+
+    def test_49_unavailable_path_no_log_leakage(self, caplog):
+        import logging
+        identity = _make_identity(_OWNER_A)
+        coord_mock = MagicMock()
+        coord_mock.reset.side_effect = ResetCoordinatorUnavailableError("unavail")
+
+        with caplog.at_level(logging.DEBUG):
+            _run_route(
+                _FRONTEND_1,
+                identity_patch=lambda headers: identity,
+                coordinator_patch=lambda: coord_mock,
+                session_id=_SESSION_A,
+            )
+
+        log_text = caplog.text
+        # Raw sensitive identifiers must not appear in logs
+        assert _OWNER_A not in log_text
+        assert _SESSION_A not in log_text
+        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
+        # safe for operational logging (one-way, non-reversible). Only raw
+        # owner_user_id_hash, session_id, and frontend_conversation_id are
+        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
+        # session-store operational logs as app_conversation_id.
+
+    def test_50_unexpected_error_path_no_log_leakage(self, caplog):
+        import logging
+        identity = _make_identity(_OWNER_A)
+        coord_mock = MagicMock()
+        coord_mock.reset.side_effect = RuntimeError(f"crash {_OWNER_A}")
+
+        with caplog.at_level(logging.DEBUG):
+            _run_route(
+                _FRONTEND_1,
+                identity_patch=lambda headers: identity,
+                coordinator_patch=lambda: coord_mock,
+                session_id=_SESSION_A,
+            )
+
+        log_text = caplog.text
+        assert _OWNER_A not in log_text
+        assert _SESSION_A not in log_text
+
+
+# ===========================================================================
+# 22. Same-cookie/different-owner route-level derivation (FIX F)
+# ===========================================================================
+
+
+class TestSameCookieDifferentOwnerRouteLevel:
+    """Scenario 22: Exercise the route key-derivation path — two trusted owners
+    sharing the same session cookie and frontend ID produce different opaque
+    keys delivered to the coordinator.
+    """
+
+    def test_51_route_delivers_distinct_keys_to_coordinator(self):
+        """Two owners, same session + frontend → coordinator receives different keys."""
+        identity_a = _make_identity(_OWNER_A)
+        identity_b = _make_identity(_OWNER_B)
+
+        received_keys: List[str] = []
+
+        class _CapturingCoordinator:
+            def reset(self, *, owner_user_id_hash, frontend_conversation_id,
+                      process_local_conversation_key):
+                received_keys.append(process_local_conversation_key)
+                return ResetResult(success=True, outcome=ResetOutcome.TOMBSTONE_CREATED)
+
+        coord = _CapturingCoordinator()
+
+        _run_route(
+            _FRONTEND_1,
+            identity_patch=lambda headers: identity_a,
+            coordinator_patch=lambda: coord,
+            session_id=_SESSION_A,
+        )
+        _run_route(
+            _FRONTEND_1,
+            identity_patch=lambda headers: identity_b,
+            coordinator_patch=lambda: coord,
+            session_id=_SESSION_A,
+        )
+
+        assert len(received_keys) == 2
+        assert received_keys[0] != received_keys[1]
+        assert all(is_valid_process_local_key(k) for k in received_keys)
+
+    def test_52_route_key_matches_expected_derivation(self):
+        """Route-delivered key matches build_process_local_conversation_key output."""
+        identity_a = _make_identity(_OWNER_A)
+
+        received_keys: List[str] = []
+
+        class _CapturingCoordinator:
+            def reset(self, *, owner_user_id_hash, frontend_conversation_id,
+                      process_local_conversation_key):
+                received_keys.append(process_local_conversation_key)
+                return ResetResult(success=True, outcome=ResetOutcome.TOMBSTONE_CREATED)
+
+        coord = _CapturingCoordinator()
+
+        _run_route(
+            _FRONTEND_1,
+            identity_patch=lambda headers: identity_a,
+            coordinator_patch=lambda: coord,
+            session_id=_SESSION_A,
+        )
+
+        expected = build_process_local_conversation_key(
+            owner_user_id_hash=_OWNER_A,
+            session_id=_SESSION_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        assert received_keys[0] == expected

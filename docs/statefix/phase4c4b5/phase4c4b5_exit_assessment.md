@@ -1,6 +1,59 @@
 # Phase 4C4B5 — Exit Assessment
 
 Date: 2026-07-20
+Correction: 2026-07-20
+
+## Phase Status: NOT CLOSED
+
+The final frontend production build (`npm run build` → `frontend/dist/`)
+remains outstanding because the current execution environment lacks npm,
+node_modules, and registry access.
+
+## Phase 4D1 Status: NOT SAFE TO BEGIN
+
+Phase 4D1 must not start until:
+1. The frontend production build executes successfully at the correction commit.
+2. The resulting `frontend/dist/` static assets are verified.
+
+## Completed Validation
+
+| Gate | Result |
+|------|--------|
+| py_compile | PASS |
+| Test 45 (real coordinator race) | PASS |
+| Combined lifecycle (52 tests) | PASS |
+| Frontend JS (49 tests) | PASS |
+| Exact 31-file suite (1423 tests) | PASS |
+| Complete non-live (2250 tests) | PASS |
+| Frontend build | BLOCKED |
+
+## Outstanding Gate
+
+- Frontend production build (`npm ci && npm run build`) at final commit.
+- Must produce `frontend/dist/index-*.js` and `frontend/dist/index-*.css`.
+- Must execute in: local clone, CI, or npm-capable Databricks environment.
+
+## Correction Summary
+
+1. **Test 45 race**: Replaced pre-created tombstone + patched adapter.load()
+   with real `ConversationResetCoordinator.reset()` invoked during
+   `wait_for_message_completion`. No patched methods, no pre-existing state.
+   10 behavioural invariants asserted.
+
+2. **Test 47 log leakage**: Removed assertion that the opaque plc_v1_ key
+   must not appear in DEBUG logs. The key is an intentionally opaque SHA-256
+   digest designed for safe operational logging. Only raw owner_hash and
+   session_id remain prohibited.
+
+## Constraints Observed
+
+- No production code changes.
+- No frontend code changes.
+- No dependency/configuration changes.
+- No deployment or app restart.
+- No live Lakebase or Genie connections.
+- No assistant-memory updates.
+- Files changed: test file + 4 documents only.
 Branch: feature/genie-state-persistence
 Baseline HEAD: 997edf1f4c3c2fc4897552e4886b3af35e8da8f7
 

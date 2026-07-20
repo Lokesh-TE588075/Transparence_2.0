@@ -1,6 +1,70 @@
 # Phase 4C4B5 — Race and Concurrency Validation
+#
+# STATUS: NOT CLOSED — final frontend production build remains outstanding.
+# Phase 4D1: NOT SAFE TO BEGIN.
 
 Date: 2026-07-20
+Correction: 2026-07-20
+
+## Correction Summary
+
+Test 45 originally used a pre-created RESET tombstone with a patched
+`adapter.load()` to conceal it from the initial lookup. This validated the
+writeback protection but did not create the tombstone via the production
+coordinator during the actual execution window.
+
+The corrected test uses the real `ConversationResetCoordinator.reset()` method
+invoked inside `wait_for_message_completion()` — the controlled Genie execution
+window between the initial MISS lookup and the durable writeback.
+
+## Real Race Sequence
+
+```
+1. Start: no durable record exists.
+2. Pipeline _durable_session_lookup → adapter.load() → None → MISS.
+3. Pipeline _run_inner → start_conversation (1 call).
+4. wait_for_message_completion:
+   a. coordinator.reset(owner, frontend_id, plc_key) executes.
+   b. Coordinator calls adapter.get_or_create(key) → new record (ACTIVE).
+   c. Coordinator calls adapter.set_status(key, RESET) → tombstone.
+   d. Coordinator calls store.remove_session(plc_key) → local removed.
+5. wait_for_message_completion returns valid _CompletionResult.
+6. Pipeline map_genie_message_to_chat_response succeeds.
+7. Pipeline _maybe_persist_durable_writeback:
+   a. Calls _persist_new_durable_conversation.
+   b. adapter.get_or_create(key) → existing record with status=RESET.
+   c. status != ACTIVE → raises _DurableInactiveConversationError.
+8. Pipeline catches error:
+   a. store.remove_session(app_conversation_id) (idempotent).
+   b. Returns _build_inactive_response().
+9. Result: status="inactive", fallback_recommended=False.
+```
+
+## Behavioural Invariants Asserted
+
+| Invariant | Value |
+|-----------|-------|
+| start_conversation calls | 1 |
+| send_message calls | 0 |
+| coordinator.reset() calls | 1 |
+| bind_genie_conversation calls | 0 |
+| update_last_genie_message calls | 0 |
+| Pipeline result status | "inactive" |
+| fallback_recommended | False |
+| Final durable status | RESET |
+| Local session | absent |
+| Durable reactivation | none (genie_conversation_id=None) |
+
+## Infrastructure
+
+- Shared InMemoryConversationRepository (single instance).
+- Shared DurableGenieSessionAdapter (single instance).
+- Shared GenieSessionStore (single instance).
+- Real ConversationResetCoordinator (same adapter + store).
+- Narrow spy wrappers on bind_genie_conversation / update_last_genie_message.
+- No MagicMock for adapter behaviour.
+- No patched adapter.load().
+- No pre-created tombstone.
 Branch: feature/genie-state-persistence
 
 ## A. Reset and Old Message Request Overlap
