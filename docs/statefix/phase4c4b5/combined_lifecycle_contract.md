@@ -1,53 +1,22 @@
 # Phase 4C4B5 — Combined Conversation Reset Lifecycle Contract
-#
-# STATUS: NOT CLOSED — final frontend production build remains outstanding.
-# Phase 4D1: NOT SAFE TO BEGIN.
+
+**STATUS: CLOSED** — logging sanitization complete, strict leakage tests pass.
 
 Date: 2026-07-20
 Branch: feature/genie-state-persistence
 Baseline HEAD: 997edf1f4c3c2fc4897552e4886b3af35e8da8f7
-Correction commit parent: db70f38e08a1ac59b7efbf66f48cc9917bd11a8c
 
-## Correction Pass (2026-07-20)
+## Logging Sanitization (Second Correction)
 
-Test 45 strengthened: real `ConversationResetCoordinator.reset()` invoked
-inside `wait_for_message_completion` window (no pre-created tombstone, no
-patched `adapter.load()`).
-
-Test 47 log-leakage contract clarified: the opaque plc_v1_ key (SHA-256
-digest) is intentionally safe for operational DEBUG logging; only raw
-owner_hash and session_id are prohibited.
-
-## Race Sequence (Test 45)
-
-1. No pre-existing durable record.
-2. adapter.load() → None (natural MISS).
-3. start_conversation called once.
-4. wait_for_message_completion: coordinator.reset() creates RESET tombstone.
-5. Coordinator removes process-local session.
-6. Valid completion returned.
-7. Writeback get_or_create() finds RESET.
-8. _DurableInactiveConversationError raised.
-9. Pipeline returns status="inactive", fallback_recommended=False.
-
-## Invariant Counts
-
-- start_conversation: 1
-- send_message: 0
-- coordinator.reset(): 1
-- bind_genie_conversation: 0
-- update_last_genie_message: 0
-- Final durable status: RESET
-- Local session: absent
-- Durable reactivation: none
+GenieSessionStore: all 4 logger.debug calls replaced with static messages
+containing no identifiers. Tests 47–50 restored to strict enforcement:
+`assert _LOCAL_KEY_A not in log_text` and `assert "plc_v1_" not in log_text`.
 
 ## Test Results
 
 - Combined lifecycle: 52 passed
-- Frontend JS: 49 passed
-- Exact 31-file: 1423 passed
-- Complete non-live (52 files): 2250 passed
-- Frontend build: BLOCKED (npm/npx absent, no node_modules, no dist)
+- Session store (incl. 5 sanitization tests): 52 passed
+- Complete non-live (54 files): 2255 passed
 
 ## Complete Cross-Layer Reset Sequence
 

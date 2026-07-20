@@ -138,10 +138,7 @@ class GenieSessionStore:
         if session is None or session.is_expired(now) or not session.is_active:
             session = self._new_session(app_conversation_id, now)
             self._sessions[app_conversation_id] = session
-            logger.debug(
-                "GenieSessionStore: created session for app_conv=%s",
-                app_conversation_id,
-            )
+            logger.debug("GenieSessionStore: session created.")
             return session
 
         session.updated_at = now
@@ -290,10 +287,7 @@ class GenieSessionStore:
             return None
 
         if session.is_expired():
-            logger.debug(
-                "GenieSessionStore: session expired for app_conv=%s",
-                app_conversation_id,
-            )
+            logger.debug("GenieSessionStore: session expired.")
             return None
 
         if not session.is_active:
@@ -335,10 +329,7 @@ class GenieSessionStore:
                 session.updated_at = datetime.now(timezone.utc)
                 self._sessions[app_conversation_id] = session
 
-        logger.debug(
-            "GenieSessionStore: reset session for app_conv=%s",
-            app_conversation_id,
-        )
+        logger.debug("GenieSessionStore: session removed.")
 
     def reset_genie_mapping(self, app_conversation_id: str) -> None:
         """Clear only Genie IDs while preserving app-side business context."""
@@ -353,10 +344,7 @@ class GenieSessionStore:
                 session.is_active = True
                 self._sessions[app_conversation_id] = session
 
-        logger.debug(
-            "GenieSessionStore: reset Genie mapping for app_conv=%s",
-            app_conversation_id,
-        )
+        logger.debug("GenieSessionStore: Genie mapping reset.")
 
     def cleanup_expired_sessions(self) -> int:
         now = datetime.now(timezone.utc)

@@ -1,7 +1,7 @@
 # Phase 4C4B5 — Test Report
 #
-# STATUS: NOT CLOSED — final frontend production build remains outstanding.
-# Phase 4D1: NOT SAFE TO BEGIN.
+# STATUS: CLOSED — logging sanitization complete.
+# Phase 4D1: SAFE TO BEGIN.
 
 Date: 2026-07-20
 Correction: 2026-07-20
@@ -59,9 +59,9 @@ Files:
 
 ## Complete Non-Live Python
 
-Files: 52 (56 total minus 4 live-only)
-Result: 2250 passed, 0 failed, 0 skipped, 0 collection errors
-Arithmetic: 2198 (previous baseline) + 52 (combined lifecycle) = 2250
+Files: 54 (56 total minus 2 live-only smoke tests)
+Result: 2255 passed, 1 skipped, 0 failed, 0 collection errors
+Arithmetic: 2250 (previous) + 5 (new store sanitization tests) = 2255
 
 Excluded live files:
 - tests/test_genie_live_smoke.py

@@ -655,6 +655,84 @@ class TestRemoveSession:
             store_logger.removeHandler(handler)
 
 
+# =============================================================================
+# TEST 14: Process-local key log sanitization (caplog-based)
+# =============================================================================
+
+
+class TestProcessLocalKeyLogSanitization:
+    """Validates that plc_v1_ process-local conversation keys do not appear
+    in any log output from GenieSessionStore operations.
+
+    Uses pytest caplog fixture for reliable log capture.
+    """
+
+    @staticmethod
+    def _make_plc_key(suffix: str = "001") -> str:
+        from app.services.process_local_conversation_key import (
+            build_process_local_conversation_key,
+        )
+        return build_process_local_conversation_key(
+            owner_user_id_hash="e" * 64,
+            session_id=f"session-sanitize-{suffix}",
+            frontend_conversation_id=f"frontend-sanitize-{suffix}",
+        )
+
+    def test_set_genie_conversation_id_no_plc_key_in_logs(self, caplog):
+        import logging
+        store = _store()
+        key = self._make_plc_key("set")
+        with caplog.at_level(logging.DEBUG):
+            store.set_genie_conversation_id(key, "genie-conv-set")
+        assert key not in caplog.text
+        assert "plc_v1_" not in caplog.text
+
+    def test_remove_session_no_plc_key_in_logs(self, caplog):
+        import logging
+        store = _store()
+        key = self._make_plc_key("rm")
+        store.set_genie_conversation_id(key, "genie-conv-rm")
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            store.remove_session(key)
+        assert key not in caplog.text
+        assert "plc_v1_" not in caplog.text
+
+    def test_reset_genie_mapping_no_plc_key_in_logs(self, caplog):
+        import logging
+        store = _store()
+        key = self._make_plc_key("reset")
+        store.set_genie_conversation_id(key, "genie-conv-reset")
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            store.reset_genie_mapping(key)
+        assert key not in caplog.text
+        assert "plc_v1_" not in caplog.text
+
+    def test_remove_nonexistent_no_plc_key_in_logs(self, caplog):
+        import logging
+        store = _store()
+        key = self._make_plc_key("gone")
+        with caplog.at_level(logging.DEBUG):
+            store.remove_session(key)
+        assert key not in caplog.text
+        assert "plc_v1_" not in caplog.text
+
+    def test_multiple_operations_no_plc_key_leakage(self, caplog):
+        import logging
+        store = _store()
+        keys = [self._make_plc_key(f"{i:03d}") for i in range(5)]
+        with caplog.at_level(logging.DEBUG):
+            for k in keys:
+                store.set_genie_conversation_id(k, f"gc-{k[-4:]}")
+            for k in keys:
+                store.remove_session(k)
+        log_text = caplog.text
+        for k in keys:
+            assert k not in log_text
+        assert "plc_v1_" not in log_text
+
+
 if __name__ == "__main__":
     import traceback
 

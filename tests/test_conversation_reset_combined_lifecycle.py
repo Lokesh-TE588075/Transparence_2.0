@@ -1373,12 +1373,19 @@ class TestResetVsWritebackPipelineRace:
     """
 
     def test_45_race_returns_inactive(self):
-        """MISS lookup → successful Genie → writeback finds RESET tombstone → inactive."""
+        """Real race: MISS → start_conversation → coordinator.reset() during
+        wait_for_message_completion → writeback finds RESET tombstone → inactive.
+
+        The coordinator is invoked inside the controlled Genie execution window
+        (wait_for_message_completion) so the tombstone is created by production
+        code between the initial MISS lookup and the durable writeback.
+        """
         from app.services.genie_pipeline import GeniePipeline
         from app.services.durable_genie_session_runtime_factory import (
             DurableGenieSessionRuntimeBundle,
         )
 
+        # --- Infrastructure: shared adapter + store (no pre-existing record) ---
         repo = InMemoryConversationRepository()
         repo_bundle = ConversationRepositoryBundle(
             repository=repo,
@@ -1390,6 +1397,37 @@ class TestResetVsWritebackPipelineRace:
         )
         store = GenieSessionStore()
 
+        # Real coordinator sharing the same adapter and store
+        coordinator = ConversationResetCoordinator(
+            adapter=adapter, session_store=store,
+        )
+
+        # --- Tracking counters ---
+        start_calls = []
+        send_calls = []
+        reset_calls = []
+        bind_calls = []
+        update_msg_calls = []
+
+        # Spy on adapter.bind_genie_conversation
+        _orig_bind = adapter.bind_genie_conversation
+
+        def _spy_bind(*a, **kw):
+            bind_calls.append(1)
+            return _orig_bind(*a, **kw)
+
+        adapter.bind_genie_conversation = _spy_bind
+
+        # Spy on adapter.update_last_genie_message
+        _orig_update = adapter.update_last_genie_message
+
+        def _spy_update(*a, **kw):
+            update_msg_calls.append(1)
+            return _orig_update(*a, **kw)
+
+        adapter.update_last_genie_message = _spy_update
+
+        # --- Completion object with proper text attachment ---
         class _TextAtt:
             def __init__(self, text):
                 self.content = text
@@ -1400,22 +1438,37 @@ class TestResetVsWritebackPipelineRace:
                 self.query_attachments = None
                 self.text_attachments = [_TextAtt("Here are the delayed shipments.")]
 
-        class _SuccessClient:
-            def start_conversation(self, space_id, message):
+        # --- Fake Genie client that triggers coordinator reset mid-execution ---
+        class _RaceClient:
+            def start_conversation(self_inner, space_id, message):
+                start_calls.append({"space_id": space_id, "message": message})
                 return {"conversation_id": "genie-race-conv", "message_id": "genie-race-msg"}
 
-            def send_message(self, space_id, conv_id, message):
+            def send_message(self_inner, space_id, conv_id, message):
+                send_calls.append({"space_id": space_id, "conv_id": conv_id})
                 return {"message_id": "genie-race-msg-2"}
 
-            def wait_for_message_completion(self, space_id, conv_id, msg_id, **kw):
+            def wait_for_message_completion(self_inner, space_id, conv_id, msg_id, **kw):
+                # *** RACE INJECTION POINT ***
+                # At this point:
+                #   - Durable lookup already returned MISS
+                #   - start_conversation already executed
+                #   - Durable writeback has NOT yet started
+                # Invoke real coordinator to create RESET tombstone:
+                result = coordinator.reset(
+                    owner_user_id_hash=_OWNER_A,
+                    frontend_conversation_id=_FRONTEND_1,
+                    process_local_conversation_key=_LOCAL_KEY_A,
+                )
+                reset_calls.append(result)
                 return _CompletionResult(msg_id)
 
-            def fetch_query_result(self, *a, **kw):
+            def fetch_query_result(self_inner, *a, **kw):
                 return None
 
-        client = _SuccessClient()
+        # --- Build pipeline ---
         pipeline = GeniePipeline(
-            genie_client=client,
+            genie_client=_RaceClient(),
             session_store=store,
             space_id="space-lifecycle-test",
             fetch_query_results=False,
@@ -1424,42 +1477,56 @@ class TestResetVsWritebackPipelineRace:
             enable_table_summary=False,
         )
 
-        # Pre-create a RESET tombstone so get_or_create in writeback finds it.
-        # But patch load to return None on first call so pipeline sees MISS.
-        load_count = [0]
-        original_load = adapter.load
-
-        key = DurableGenieSessionKey(
-            owner_user_id_hash=_OWNER_A,
-            frontend_conversation_id=_FRONTEND_1,
-        )
-        create_result = adapter.get_or_create(key)
-        adapter.set_status(key, ConversationStatus.RESET,
-                           expected_version=create_result.record.version)
-
-        def patched_load(k):
-            load_count[0] += 1
-            if load_count[0] == 1:
-                return None  # Pipeline sees MISS
-            return original_load(k)
-
-        adapter.load = patched_load
-
         bundle = DurableGenieSessionRuntimeBundle(
             enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
         )
         setattr(pipeline, "_durable_session_runtime_bundle", bundle)
 
+        # --- Execute pipeline ---
         result = pipeline.run(
             "show delayed",
             _LOCAL_KEY_A,
             owner_key=_OWNER_A,
             frontend_conversation_id=_FRONTEND_1,
         )
-        # Pipeline runs Genie successfully, then writeback finds RESET tombstone
-        # via get_or_create → raises _DurableInactiveConversationError → inactive
+
+        # === ASSERT ALL 10 RACE INVARIANTS ===
+
+        # 1. start_conversation called exactly once
+        assert len(start_calls) == 1, f"start_conversation count: {len(start_calls)}"
+
+        # 2. send_message never called (new conversation, not existing)
+        assert len(send_calls) == 0, f"send_message count: {len(send_calls)}"
+
+        # 3. coordinator.reset() called exactly once (inside wait_for_message_completion)
+        assert len(reset_calls) == 1, f"coordinator reset count: {len(reset_calls)}"
+
+        # 4. adapter.bind_genie_conversation never called (writeback blocked)
+        assert len(bind_calls) == 0, f"bind_genie_conversation count: {len(bind_calls)}"
+
+        # 5. adapter.update_last_genie_message never called
+        assert len(update_msg_calls) == 0, f"update_last_genie_message count: {len(update_msg_calls)}"
+
+        # 6. Pipeline returns dedicated inactive response
         assert result["status"] == "inactive"
+
+        # 7. fallback_recommended is False (no custom pipeline retry)
         assert result.get("fallback_recommended") is False
+
+        # 8. Final durable status is RESET (tombstone preserved, no reactivation)
+        durable_key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        final_lookup = adapter.load(durable_key)
+        assert final_lookup is not None
+        assert final_lookup.record.status == ConversationStatus.RESET
+
+        # 9. Local GenieSessionStore entry is absent
+        assert store.get_session(_LOCAL_KEY_A) is None
+
+        # 10. No durable reactivation (status remains RESET, not ACTIVE)
+        assert final_lookup.record.genie_conversation_id is None
 
     def test_46_race_local_session_removed(self):
         """After race detection, local session is removed."""
@@ -1557,14 +1624,10 @@ class TestNoLogLeakage:
             )
 
         log_text = caplog.text
-        # Raw sensitive identifiers must not appear in logs
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
-        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
-        # safe for operational logging (one-way, non-reversible). Only raw
-        # owner_user_id_hash, session_id, and frontend_conversation_id are
-        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
-        # session-store operational logs as app_conversation_id.
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
 
     def test_48_conflict_path_no_log_leakage(self, caplog):
         import logging
@@ -1581,14 +1644,10 @@ class TestNoLogLeakage:
             )
 
         log_text = caplog.text
-        # Raw sensitive identifiers must not appear in logs
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
-        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
-        # safe for operational logging (one-way, non-reversible). Only raw
-        # owner_user_id_hash, session_id, and frontend_conversation_id are
-        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
-        # session-store operational logs as app_conversation_id.
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
 
     def test_49_unavailable_path_no_log_leakage(self, caplog):
         import logging
@@ -1605,14 +1664,10 @@ class TestNoLogLeakage:
             )
 
         log_text = caplog.text
-        # Raw sensitive identifiers must not appear in logs
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
-        # The plc_v1_ key is an intentionally opaque SHA-256 digest — it is
-        # safe for operational logging (one-way, non-reversible). Only raw
-        # owner_user_id_hash, session_id, and frontend_conversation_id are
-        # prohibited in logs.  The opaque key MAY appear in DEBUG-level
-        # session-store operational logs as app_conversation_id.
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
 
     def test_50_unexpected_error_path_no_log_leakage(self, caplog):
         import logging
@@ -1631,6 +1686,8 @@ class TestNoLogLeakage:
         log_text = caplog.text
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
 
 
 # ===========================================================================

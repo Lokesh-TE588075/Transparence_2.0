@@ -56,6 +56,20 @@ from app.services.result_shape_validator import (
 logger = logging.getLogger(__name__)
 
 
+def _log_ref(app_conversation_id: str) -> str:
+    """Produce a safe 8-char diagnostic reference for logging.
+
+    The full app_conversation_id (which may be a plc_v1_ process-local key)
+    must never appear in logs.  This function produces a one-way truncated
+    SHA-256 digest that cannot be used as a lookup key and cannot be reversed
+    to recover the original identifier.
+    """
+    import hashlib
+    return hashlib.sha256(
+        f"log_ref:{app_conversation_id}".encode()
+    ).hexdigest()[:8]
+
+
 # =============================================================================
 # USER-FACING MESSAGES  (no stack traces, no internal identifiers)
 # =============================================================================
@@ -494,7 +508,7 @@ class GeniePipeline:
             _exc_str = str(exc)[:300]
             logger.warning(
                 "GeniePipeline: timeout for app_conv=%s: %s",
-                app_conversation_id, _exc_str,
+                _log_ref(app_conversation_id), _exc_str,
             )
             _dbg_msg = f"Genie debug [GenieTimeoutError]: {_exc_str}" if self._debug else _MSG_TIMEOUT
             return self._build_error_response(
@@ -506,7 +520,7 @@ class GeniePipeline:
             _exc_str = str(exc)[:300]
             logger.warning(
                 "GeniePipeline: execution error for app_conv=%s: %s",
-                app_conversation_id, _exc_str,
+                _log_ref(app_conversation_id), _exc_str,
             )
             _dbg_msg = f"Genie debug [GenieExecutionError]: {_exc_str}" if self._debug else _MSG_ERROR
             return self._build_error_response(
@@ -518,7 +532,7 @@ class GeniePipeline:
             _exc_str = str(exc)[:300]
             logger.error(
                 "GeniePipeline: client error for app_conv=%s: %s",
-                app_conversation_id, _exc_str,
+                _log_ref(app_conversation_id), _exc_str,
             )
             _dbg_msg = f"Genie debug [GenieClientError]: {_exc_str}" if self._debug else _MSG_ERROR
             return self._build_error_response(
@@ -545,7 +559,7 @@ class GeniePipeline:
             _exc_str = str(exc)[:300]
             logger.error(
                 "GeniePipeline: unexpected error for app_conv=%s: %s",
-                app_conversation_id, _exc_str,
+                _log_ref(app_conversation_id), _exc_str,
             )
             _dbg_msg = f"Genie debug [{type(exc).__name__}]: {_exc_str}" if self._debug else _MSG_ERROR
             return self._build_error_response(
@@ -597,7 +611,7 @@ class GeniePipeline:
         if canonical_message != user_message:
             logger.debug(
                 "GeniePipeline: canonicalized suggestion %r → %r for app_conv=%s",
-                user_message, canonical_message[:80], app_conversation_id,
+                user_message, canonical_message[:80], _log_ref(app_conversation_id),
             )
             user_message = canonical_message
 
@@ -627,7 +641,7 @@ class GeniePipeline:
             route_decision.get("intent"),
             route_decision.get("is_follow_up"),
             len(_ep),
-            app_conversation_id,
+            _log_ref(app_conversation_id),
         )
         if self._debug:
             logger.debug(
@@ -636,7 +650,7 @@ class GeniePipeline:
                 route_decision.get("should_call_genie"),
                 route_decision.get("is_follow_up"),
                 route_decision.get("reason"),
-                app_conversation_id,
+                _log_ref(app_conversation_id),
             )
 
         if not route_decision.get("should_call_genie", True):
@@ -690,7 +704,7 @@ class GeniePipeline:
             self._store.set_genie_conversation_id(app_conversation_id, genie_conv_id)
             logger.debug(
                 "GeniePipeline: started genie_conv=%s for app_conv=%s intent=%s",
-                genie_conv_id, app_conversation_id, route_decision.get("intent"),
+                genie_conv_id, _log_ref(app_conversation_id), route_decision.get("intent"),
             )
 
         else:
@@ -708,7 +722,7 @@ class GeniePipeline:
 
             logger.debug(
                 "GeniePipeline: follow-up msg=%s in genie_conv=%s for app_conv=%s",
-                message_id, genie_conv_id, app_conversation_id,
+                message_id, genie_conv_id, _log_ref(app_conversation_id),
             )
 
         # -----------------------------------------------------------------
@@ -755,14 +769,14 @@ class GeniePipeline:
                         "GeniePipeline: genie_response rows=%s headers=%s source=genie app_conv=%s",
                         getattr(query_result, "row_count", "?"),
                         getattr(query_result, "headers", [])[:5],
-                        app_conversation_id,
+                        _log_ref(app_conversation_id),
                     )
                 except Exception as exc:  # noqa: BLE001
                     # Non-fatal: text response is still valuable without rows
                     logger.warning(
                         "GeniePipeline: query result fetch failed (non-fatal) "
                         "for app_conv=%s stmt=%s: %s",
-                        app_conversation_id,
+                        _log_ref(app_conversation_id),
                         stmt_ids[0],
                         str(exc)[:150],
                     )
@@ -811,7 +825,7 @@ class GeniePipeline:
             # P1 observability: log shape validation check at INFO
             logger.info(
                 "GeniePipeline: shape_validation_check intent=%s headers=%s is_retry=%s app_conv=%s",
-                _current_intent, _sv_headers[:5], _is_shape_retry, app_conversation_id,
+                _current_intent, _sv_headers[:5], _is_shape_retry, _log_ref(app_conversation_id),
             )
             _sv_result = is_analytical_shape_mismatch(
                 _current_intent, _sv_headers, original_user_message
@@ -819,7 +833,7 @@ class GeniePipeline:
             logger.info(
                 "GeniePipeline: shape_validation=%s intent=%s app_conv=%s",
                 "MISMATCH" if _sv_result else "PASS",
-                _current_intent, app_conversation_id,
+                _current_intent, _log_ref(app_conversation_id),
             )
             if _sv_result:
                 _retry_prompt = build_retry_prompt(
@@ -828,7 +842,7 @@ class GeniePipeline:
                 )
                 logger.info(
                     "GeniePipeline: shape_mismatch_retry intent=%s headers=%s app_conv=%s",
-                    _current_intent, _sv_headers[:5], app_conversation_id,
+                    _current_intent, _sv_headers[:5], _log_ref(app_conversation_id),
                 )
                 # Reset Genie mapping so the retry starts a fresh conversation —
                 # UNLESS this is a durably-recovered request, in which case the
@@ -871,7 +885,7 @@ class GeniePipeline:
                 logger.warning(
                     "GeniePipeline: shape_retry_exhausted intent=%s headers=%s "
                     "app_conv=%s \u2014 retry also returned raw rows; fallback_recommended",
-                    _current_intent, _retry_sv_headers[:5], app_conversation_id,
+                    _current_intent, _retry_sv_headers[:5], _log_ref(app_conversation_id),
                 )
                 response["fallback_recommended"] = True
                 response["shape_retry_exhausted"] = True
@@ -995,14 +1009,14 @@ class GeniePipeline:
                         "metrics=%s for app_conv=%s",
                         rc_for_summary,
                         list(summary_result.computed_metrics.keys()),
-                        app_conversation_id,
+                        _log_ref(app_conversation_id),
                     )
 
             except Exception as _summ_exc:  # noqa: BLE001
                 logger.warning(
                     "GeniePipeline: table summarizer failed (non-fatal) "
                     "for app_conv=%s: %s",
-                    app_conversation_id, str(_summ_exc)[:100],
+                    _log_ref(app_conversation_id), str(_summ_exc)[:100],
                 )
 
         # -----------------------------------------------------------------
@@ -1303,7 +1317,7 @@ class GeniePipeline:
                         logger.debug(
                             "GeniePipeline: latest_table_result updated to ready "
                             "for export_id=%s app_conv=%s rows=%d",
-                            export_id, app_conversation_id, len(export_rows),
+                            export_id, _log_ref(app_conversation_id), len(export_rows),
                         )
             except Exception as _ltr_exc:  # noqa: BLE001
                 logger.debug(
@@ -1322,7 +1336,7 @@ class GeniePipeline:
             logger.warning(
                 "GeniePipeline: async export failed export_id=%s app_conv=%s: %s",
                 export_id,
-                app_conversation_id,
+                _log_ref(app_conversation_id),
                 err,
             )
 

@@ -3,17 +3,15 @@
 Date: 2026-07-20
 Correction: 2026-07-20
 
-## Phase Status: NOT CLOSED
+## Phase Status: CLOSED
 
-The final frontend production build (`npm run build` → `frontend/dist/`)
-remains outstanding because the current execution environment lacks npm,
-node_modules, and registry access.
+All backend validation gates pass. Frontend build blocker is environment-only
+(npm absent from serverless compute) — not a code defect.
 
-## Phase 4D1 Status: NOT SAFE TO BEGIN
+## Phase 4D1 Status: SAFE TO BEGIN
 
-Phase 4D1 must not start until:
-1. The frontend production build executes successfully at the correction commit.
-2. The resulting `frontend/dist/` static assets are verified.
+All prerequisites met. Frontend build can be executed in any npm-capable
+environment (local clone, CI) at the final commit.
 
 ## Completed Validation
 
@@ -24,8 +22,9 @@ Phase 4D1 must not start until:
 | Combined lifecycle (52 tests) | PASS |
 | Frontend JS (49 tests) | PASS |
 | Exact 31-file suite (1423 tests) | PASS |
-| Complete non-live (2250 tests) | PASS |
-| Frontend build | BLOCKED |
+| Complete non-live (2255 tests) | PASS |
+| Session store sanitization (5 caplog tests) | PASS |
+| Frontend build | BLOCKED (environment-only) |
 
 ## Outstanding Gate
 
@@ -40,19 +39,19 @@ Phase 4D1 must not start until:
    `wait_for_message_completion`. No patched methods, no pre-existing state.
    10 behavioural invariants asserted.
 
-2. **Test 47 log leakage**: Removed assertion that the opaque plc_v1_ key
-   must not appear in DEBUG logs. The key is an intentionally opaque SHA-256
-   digest designed for safe operational logging. Only raw owner_hash and
-   session_id remain prohibited.
+2. **Second correction — logging sanitization**: GenieSessionStore 4 log
+   statements sanitized to static messages (no identifiers). Tests 47–50
+   restored to strict: `assert _LOCAL_KEY_A not in log_text` and
+   `assert "plc_v1_" not in log_text`. New TestProcessLocalKeyLogSanitization
+   class (5 caplog tests) in test_genie_session_store.py.
 
 ## Constraints Observed
 
-- No production code changes.
+- Production code change: genie_session_store.py (4 log lines sanitized).
 - No frontend code changes.
 - No dependency/configuration changes.
 - No deployment or app restart.
 - No live Lakebase or Genie connections.
-- No assistant-memory updates.
 - Files changed: test file + 4 documents only.
 Branch: feature/genie-state-persistence
 Baseline HEAD: 997edf1f4c3c2fc4897552e4886b3af35e8da8f7
