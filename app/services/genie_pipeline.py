@@ -704,7 +704,7 @@ class GeniePipeline:
             self._store.set_genie_conversation_id(app_conversation_id, genie_conv_id)
             logger.debug(
                 "GeniePipeline: started genie_conv=%s for app_conv=%s intent=%s",
-                genie_conv_id, _log_ref(app_conversation_id), route_decision.get("intent"),
+                _log_ref(genie_conv_id), _log_ref(app_conversation_id), route_decision.get("intent"),
             )
 
         else:
@@ -722,7 +722,7 @@ class GeniePipeline:
 
             logger.debug(
                 "GeniePipeline: follow-up msg=%s in genie_conv=%s for app_conv=%s",
-                message_id, genie_conv_id, _log_ref(app_conversation_id),
+                _log_ref(message_id), _log_ref(genie_conv_id), _log_ref(app_conversation_id),
             )
 
         # -----------------------------------------------------------------
@@ -777,7 +777,7 @@ class GeniePipeline:
                         "GeniePipeline: query result fetch failed (non-fatal) "
                         "for app_conv=%s stmt=%s: %s",
                         _log_ref(app_conversation_id),
-                        stmt_ids[0],
+                        _log_ref(str(stmt_ids[0])),
                         str(exc)[:150],
                     )
 
@@ -1317,7 +1317,7 @@ class GeniePipeline:
                         logger.debug(
                             "GeniePipeline: latest_table_result updated to ready "
                             "for export_id=%s app_conv=%s rows=%d",
-                            export_id, _log_ref(app_conversation_id), len(export_rows),
+                            _log_ref(export_id), _log_ref(app_conversation_id), len(export_rows),
                         )
             except Exception as _ltr_exc:  # noqa: BLE001
                 logger.debug(
@@ -1335,7 +1335,7 @@ class GeniePipeline:
             )
             logger.warning(
                 "GeniePipeline: async export failed export_id=%s app_conv=%s: %s",
-                export_id,
+                _log_ref(export_id),
                 _log_ref(app_conversation_id),
                 err,
             )

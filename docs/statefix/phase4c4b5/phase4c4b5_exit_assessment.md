@@ -1,142 +1,61 @@
 # Phase 4C4B5 — Exit Assessment
 
-Date: 2026-07-20
-Correction: 2026-07-20
+## Status: NOT CLOSED
+## Phase 4D1: NOT SAFE TO BEGIN
 
-## Phase Status: CLOSED
+## Reason: Frontend Build Gate Blocked
 
-All backend validation gates pass. Frontend build blocker is environment-only
-(npm absent from serverless compute) — not a code defect.
+The Databricks serverless compute environment does not provide npm.
+The `npm ci && npm run build` command cannot be executed to verify
+the Vite frontend build passes at the final commit SHA.
 
-## Phase 4D1 Status: SAFE TO BEGIN
-
-All prerequisites met. Frontend build can be executed in any npm-capable
-environment (local clone, CI) at the final commit.
-
-## Completed Validation
-
-| Gate | Result |
-|------|--------|
-| py_compile | PASS |
-| Test 45 (real coordinator race) | PASS |
-| Combined lifecycle (52 tests) | PASS |
-| Frontend JS (49 tests) | PASS |
-| Exact 31-file suite (1423 tests) | PASS |
-| Complete non-live (2255 tests) | PASS |
-| Session store sanitization (5 caplog tests) | PASS |
-| Frontend build | BLOCKED (environment-only) |
-
-## Outstanding Gate
-
-- Frontend production build (`npm ci && npm run build`) at final commit.
-- Must produce `frontend/dist/index-*.js` and `frontend/dist/index-*.css`.
-- Must execute in: local clone, CI, or npm-capable Databricks environment.
-
-## Correction Summary
-
-1. **Test 45 race**: Replaced pre-created tombstone + patched adapter.load()
-   with real `ConversationResetCoordinator.reset()` invoked during
-   `wait_for_message_completion`. No patched methods, no pre-existing state.
-   10 behavioural invariants asserted.
-
-2. **Second correction — logging sanitization**: GenieSessionStore 4 log
-   statements sanitized to static messages (no identifiers). Tests 47–50
-   restored to strict: `assert _LOCAL_KEY_A not in log_text` and
-   `assert "plc_v1_" not in log_text`. New TestProcessLocalKeyLogSanitization
-   class (5 caplog tests) in test_genie_session_store.py.
-
-## Constraints Observed
-
-- Production code change: genie_session_store.py (4 log lines sanitized).
-- No frontend code changes.
-- No dependency/configuration changes.
-- No deployment or app restart.
-- No live Lakebase or Genie connections.
-- Files changed: test file + 4 documents only.
-Branch: feature/genie-state-persistence
-Baseline HEAD: 997edf1f4c3c2fc4897552e4886b3af35e8da8f7
-
-## Verdict: PASS WITH CONDITIONS
-
-### Condition
-
-Frontend production build could not execute in the serverless notebook environment:
-- npm binary is a dead symlink (target `/usr/local/lib/node_modules/npm/` absent)
-- `frontend/node_modules/` absent (deleted per CRITICAL deployment rule)
-- `frontend/dist/` absent
-- No npm cache available
-- Registry downloads prohibited by phase rules
-
-This is the same carried condition from Phase 4C4B4. Frontend source integrity is validated via 49 JavaScript unit tests that exercise the production module (`conversationResetLifecycle.js`) without build tooling.
-
-## Phase Deliverables
-
-### Tests Added
-- `tests/test_conversation_reset_combined_lifecycle.py` — 39 tests covering 17 lifecycle scenarios
-
-### Documentation Added (4 files)
-- `docs/statefix/phase4c4b5/combined_lifecycle_contract.md`
-- `docs/statefix/phase4c4b5/race_validation.md`
-- `docs/statefix/phase4c4b5/test_report.md`
-- `docs/statefix/phase4c4b5/phase4c4b5_exit_assessment.md`
-
-### Production Changes
-None.
-
-### Dependency/Configuration Changes
-None.
-
-## Validation Results
+## All Other Gates: PASSED
 
 | Gate | Result |
 | --- | --- |
-| Frontend build | BLOCKED (carried condition) |
-| Frontend JS tests | 49 passed, 0 failed |
-| Combined lifecycle tests | 39 passed, 0 failed |
-| Backend reset suite (9 files) | 406 passed, 0 failed |
-| Expanded persistence suite (34 files) | 1559 passed, 0 failed |
-| Complete non-live (52 files) | 2237 passed, 0 failed |
-| Python failures | 0 |
-| Python skipped | 0 |
-| Python collection errors | 0 |
-| JS failures | 0 |
-| JS skipped | 0 |
-| JS cancelled | 0 |
-| JS unhandled rejections | 0 |
+| Production logging sanitized | PASS — all identifiers use _log_ref() or static text |
+| Combined lifecycle tests | PASS — 55/55 |
+| Session store log tests | PASS — 52/52 |
+| Frontend JavaScript tests | PASS — 49/49 |
+| 31-file suite | PASS — 1431/1431 |
+| Complete non-live suite | PASS — 2258/2258, 0 skipped |
+| Focused logging validation | PASS — 294/294 |
+| No frontend source changes | CONFIRMED |
+| No dependency/config changes | CONFIRMED |
+| No deployment/restart | CONFIRMED |
+| No live Lakebase/Genie | CONFIRMED |
+| uv not staged | CONFIRMED |
+| Clean working tree (pre-commit) | CONFIRMED |
 
-## Lifecycle Contract Verification
+## Production Changes (this correction)
+1. `app/services/genie_pipeline.py` — 5 additional _log_ref() wraps:
+   - `genie_conv_id` at Genie start log
+   - `message_id` + `genie_conv_id` at follow-up send log
+   - `stmt_ids[0]` at query fetch warning
+   - `export_id` at export success/failure logs
 
-- Cross-layer reset sequence: VERIFIED (20 steps, end-to-end)
-- Shared runtime identity: VERIFIED (same store/adapter as pipeline)
-- Owner isolation: VERIFIED (tests 16-17)
-- Status/idempotency: VERIFIED (ACTIVE/RESET/STALE/EXPIRED/MISS all correct)
-- Reset/writeback race: VERIFIED (tombstone wins, test 30)
-- Frontend late-response: VERIFIED (isResponseEligible rejects old ID)
-- Concurrent reset: VERIFIED (lock + backend idempotency)
-- No prohibited operations: VERIFIED (no delete/bind/update-message/touch)
-- No identifier leakage: VERIFIED (tests 37-39)
+## Test Changes (this correction)
+1. `tests/test_conversation_reset_combined_lifecycle.py`:
+   - Tests 47-50: added `_FRONTEND_1` assertion + `genie-lifecycle-test` (test_47)
+   - Tests 50b/50c/50d: new pipeline caplog leakage tests
 
-## Constraints Honoured
+## Logging Policy Summary
+- `genie_session_store.py`: static text only
+- `genie_pipeline.py`: `_log_ref()` for all identifier positions (24 total)
+- `conversation_reset_coordinator.py`: static text only
+- `conversation_reset.py` (route): static text only
+- Exception text: truncated via `str(exc)[:N]`; no raw identifiers
+- `_log_ref()` produces 8-char SHA-256 hex; non-reversible; not a lookup key
 
-- No deployment
-- No app restart
-- No live Lakebase connection
-- No credential generation
-- No live SQL execution
-- No assistant-memory update
-- No uv runtime file staged
-- No production source changes
-- No dependency changes
-- No configuration changes
+## To Close Phase 4C4B5
+Run on a build-capable environment at the final commit SHA:
+```bash
+cd frontend && npm ci && npm run build
+```
+Verify exit code 0 and Vite build summary with generated assets.
 
-## Phase 4D1 Readiness
-
-**Phase 4D1 is SAFE to begin.**
-
-Rationale:
-1. The complete reset lifecycle contract is validated end-to-end.
-2. All backend components are exercised through real in-memory implementations.
-3. Frontend contract is validated through 49 production-linked unit tests.
-4. Zero test failures, skips, or collection errors.
-5. The only open condition (frontend build) is a deployment-environment concern, not a contract concern.
-6. No production code defects were discovered during this validation phase.
+## Commit History
+- Phase 4C4B5 original: `db70f38e08a1ac59b7efbf66f48cc9917bd11a8c`
+- Phase 4C4B5 first correction: `60ab02299ced63a520b4376dc26b6d1dc96af3dc`
+- First logging commit: `65a07818510d74bf9c8645f9250ff2b1a9fa0c8c`
+- Final correction: TBD (pending push)

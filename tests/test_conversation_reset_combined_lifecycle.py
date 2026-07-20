@@ -1626,8 +1626,10 @@ class TestNoLogLeakage:
         log_text = caplog.text
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
+        assert _FRONTEND_1 not in log_text
         assert _LOCAL_KEY_A not in log_text
         assert "plc_v1_" not in log_text
+        assert "genie-lifecycle-test" not in log_text
 
     def test_48_conflict_path_no_log_leakage(self, caplog):
         import logging
@@ -1646,6 +1648,7 @@ class TestNoLogLeakage:
         log_text = caplog.text
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
+        assert _FRONTEND_1 not in log_text
         assert _LOCAL_KEY_A not in log_text
         assert "plc_v1_" not in log_text
 
@@ -1666,6 +1669,7 @@ class TestNoLogLeakage:
         log_text = caplog.text
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
+        assert _FRONTEND_1 not in log_text
         assert _LOCAL_KEY_A not in log_text
         assert "plc_v1_" not in log_text
 
@@ -1686,8 +1690,183 @@ class TestNoLogLeakage:
         log_text = caplog.text
         assert _OWNER_A not in log_text
         assert _SESSION_A not in log_text
+        assert _FRONTEND_1 not in log_text
         assert _LOCAL_KEY_A not in log_text
         assert "plc_v1_" not in log_text
+
+    def test_50b_pipeline_start_no_genie_id_leakage(self, caplog):
+        """Pipeline Genie start path must not log raw genie_conv_id or message_id."""
+        import logging
+        from app.services.genie_pipeline import GeniePipeline
+
+        _GENIE_CONV = "genie-conv-secret-start"
+        _GENIE_MSG = "genie-msg-secret-start"
+
+        class _FakeClient:
+            def start_conversation(self, space_id, message):
+                return {"conversation_id": _GENIE_CONV, "message_id": _GENIE_MSG}
+            def wait_for_message_completion(self, *a, **kw):
+                class _A:
+                    content = "result text"
+                class _R:
+                    query_attachments = None
+                    message_id = _GENIE_MSG
+                    text_attachments = [_A()]
+                return _R()
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        store = GenieSessionStore()
+        pipeline = GeniePipeline(
+            genie_client=_FakeClient(),
+            session_store=store,
+            space_id="space-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            pipeline.run("show delayed", _LOCAL_KEY_A)
+
+        log_text = caplog.text
+        assert _GENIE_CONV not in log_text
+        assert _GENIE_MSG not in log_text
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
+
+    def test_50c_pipeline_followup_no_genie_id_leakage(self, caplog):
+        """Pipeline Genie follow-up (send_message) must not log raw IDs."""
+        import logging
+        from app.services.genie_pipeline import GeniePipeline
+
+        _GENIE_CONV = "genie-conv-secret-followup"
+        _GENIE_MSG_1 = "genie-msg-secret-f1"
+        _GENIE_MSG_2 = "genie-msg-secret-f2"
+
+        class _FakeClient:
+            def start_conversation(self, space_id, message):
+                return {"conversation_id": _GENIE_CONV, "message_id": _GENIE_MSG_1}
+            def send_message(self, space_id, conv_id, message):
+                return {"message_id": _GENIE_MSG_2}
+            def wait_for_message_completion(self, *a, **kw):
+                class _A:
+                    content = "some answer"
+                class _R:
+                    query_attachments = None
+                    message_id = _GENIE_MSG_2
+                    text_attachments = [_A()]
+                return _R()
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        store = GenieSessionStore()
+        pipeline = GeniePipeline(
+            genie_client=_FakeClient(),
+            session_store=store,
+            space_id="space-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+
+        # First call creates the conversation
+        pipeline.run("first question", _LOCAL_KEY_A)
+        caplog.clear()
+
+        # Second call triggers send_message path
+        with caplog.at_level(logging.DEBUG):
+            pipeline.run("follow-up question", _LOCAL_KEY_A)
+
+        log_text = caplog.text
+        assert _GENIE_CONV not in log_text
+        assert _GENIE_MSG_1 not in log_text
+        assert _GENIE_MSG_2 not in log_text
+        assert _LOCAL_KEY_A not in log_text
+        assert "plc_v1_" not in log_text
+
+    def test_50d_pipeline_race_path_no_genie_id_leakage(self, caplog):
+        """Race-path (inactive durable state) must not log raw Genie IDs."""
+        import logging
+        from unittest.mock import MagicMock
+        from app.services.genie_pipeline import GeniePipeline
+        from app.services.durable_genie_session_adapter import DurableGenieSessionAdapter
+        from app.services.durable_genie_session_runtime_factory import (
+            DurableGenieSessionRuntimeBundle,
+        )
+
+        _GENIE_CONV = "genie-race-secret-conv"
+        _GENIE_MSG = "genie-race-secret-msg"
+
+        repo_mem = InMemoryConversationRepository()
+        repo_bundle = ConversationRepositoryBundle(
+            repository=repo_mem,
+            backend=ConversationRepositoryBackend.MEMORY,
+            durable=False,
+        )
+        adapter = DurableGenieSessionAdapter(
+            repository_bundle=repo_bundle, cache_store=None, cache_enabled=False,
+        )
+
+        # Pre-create RESET tombstone
+        from app.services.durable_genie_session_adapter import DurableGenieSessionKey
+        key = DurableGenieSessionKey(
+            owner_user_id_hash=_OWNER_A,
+            frontend_conversation_id=_FRONTEND_1,
+        )
+        create_result = adapter.get_or_create(key)
+        adapter.set_status(key, ConversationStatus.RESET,
+                           expected_version=create_result.record.version)
+
+        class _FakeClient:
+            def start_conversation(self, *a, **kw):
+                return {"conversation_id": _GENIE_CONV, "message_id": _GENIE_MSG}
+            def send_message(self, *a, **kw):
+                return {"message_id": _GENIE_MSG}
+            def wait_for_message_completion(self, *a, **kw):
+                class _A:
+                    content = "result"
+                class _R:
+                    query_attachments = None
+                    message_id = _GENIE_MSG
+                    text_attachments = [_A()]
+                return _R()
+            def fetch_query_result(self, *a, **kw):
+                return None
+
+        store = GenieSessionStore()
+        pipeline = GeniePipeline(
+            genie_client=_FakeClient(),
+            session_store=store,
+            space_id="space-test",
+            fetch_query_results=False,
+            enable_prompt_enrichment=False,
+            enable_shape_validation=False,
+            enable_table_summary=False,
+        )
+        bundle = DurableGenieSessionRuntimeBundle(
+            enabled=True, adapter=adapter, backend=MagicMock(), durable=True,
+        )
+        setattr(pipeline, "_durable_session_runtime_bundle", bundle)
+
+        with caplog.at_level(logging.DEBUG):
+            pipeline.run(
+                "show delayed",
+                _LOCAL_KEY_A,
+                owner_key=_OWNER_A,
+                frontend_conversation_id=_FRONTEND_1,
+            )
+
+        log_text = caplog.text
+        assert _GENIE_CONV not in log_text
+        assert _GENIE_MSG not in log_text
+        assert _OWNER_A not in log_text
+        assert _LOCAL_KEY_A not in log_text
+        assert _FRONTEND_1 not in log_text
+        assert "plc_v1_" not in log_text
+
 
 
 # ===========================================================================
