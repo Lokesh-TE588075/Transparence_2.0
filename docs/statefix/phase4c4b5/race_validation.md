@@ -1,6 +1,6 @@
 # Phase 4C4B5 — Race Validation
 
-## Status: NOT CLOSED (build gate blocked)
+## Status: CLOSED
 
 ## Race-Path Logging Sanitization
 
@@ -33,4 +33,7 @@ All 10 race invariants from tests 45-46 continue to pass:
 9. Local GenieSessionStore entry absent
 10. No durable reactivation
 
-## Validation: 55 combined lifecycle tests passed
+## Validation
+- Combined lifecycle: 55 passed
+- Complete non-live: 2258 passed, 0 skipped
+- Frontend production build: PASS (Vite 6.4.3, exit 0, 817 modules)

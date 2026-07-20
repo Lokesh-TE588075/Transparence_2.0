@@ -1,6 +1,6 @@
 # Phase 4C4B5 — Combined Lifecycle Contract
 
-## Status: NOT CLOSED (build gate blocked)
+## Status: CLOSED
 
 ## Logging Sanitization Policy
 
@@ -46,15 +46,29 @@ No complete identifier may appear in application logs:
 ### Complete Non-Live: 2258 passed, 0 skipped
 ### Frontend JavaScript: 49 passed
 
-## Frontend Build Gate
-**BLOCKED** — npm not available in Databricks serverless compute.
+## Frontend Production Build
 
-### Local Build Command
-```bash
-cd frontend && npm ci && npm run build
-```
+Built at commit `38051da7ed0c2c4bf7c56ef4336be9061f96dc3b` in a fresh local
+Git clone.
+
+| Item | Result |
+| --- | --- |
+| npm ci | 185 packages installed, 0 vulnerabilities, exit 0 |
+| Vite version | 6.4.3 |
+| Modules transformed | 817 |
+| Build duration | 6.61 seconds |
+| Exit code | 0 |
+| Output directory | static/ (configured by Vite) |
+| index-CyFuLl5J.js | 688,161 bytes |
+| index-DXvXWuaf.css | 18,107 bytes |
+| index.html | 618 bytes |
+
+Non-blocking warnings: Recharts 2.15.4 deprecation notice; JS chunk > 500 kB.
+No JSX errors, no missing imports/exports, no module-resolution failures.
 
 ## Commit History
-- Parent (first correction): `60ab02299ced63a520b4376dc26b6d1dc96af3dc`
+- Phase 4C4B5 original: `db70f38e08a1ac59b7efbf66f48cc9917bd11a8c`
+- Phase 4C4B5 first correction: `60ab02299ced63a520b4376dc26b6d1dc96af3dc`
 - First logging commit: `65a07818510d74bf9c8645f9250ff2b1a9fa0c8c`
-- Final correction commit: 9bbdc89234384f891913f0b6659b776d2c09806a
+- Final logging correction: `9bbdc89234384f891913f0b6659b776d2c09806a`
+- Docs SHA update: `38051da7ed0c2c4bf7c56ef4336be9061f96dc3b`
