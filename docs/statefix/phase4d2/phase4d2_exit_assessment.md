@@ -1,115 +1,120 @@
-# Phase 4D2 — Exit Assessment
+# Phase 4D2 — Exit Assessment (Correction)
 
-Phase 4D2 — Validate production configuration and permissions readiness
-
-Generated: 2026-07-20
+## Status: PASS WITH EXTERNAL PERMISSION BLOCKERS
 
 ---
 
-## Verdict
+## Corrections Applied
 
-**PASS WITH EXTERNAL PERMISSION BLOCKERS**
+This correction addresses three issues in the original Phase 4D2 report:
 
-Code and configuration are ready. The application can be deployed for a controlled Genie
-smoke test with test-deployment flags (durable state and trusted identity disabled).
-One external operational blocker must be resolved before the code can be served: the
-active app deployment source path points to `transparence_app`, not the git repo.
-
----
-
-## Readiness Checklist
-
-| Item | Status |
-|------|--------|
-| Required configuration documented | COMPLETE |
-| Safe feature-flag combination validated | COMPLETE |
-| Required secrets referenced safely | COMPLETE |
-| Startup fail-closed behaviour verified | COMPLETE |
-| Production readiness service implemented | COMPLETE |
-| Configuration tests (>=35): 47 tests | COMPLETE |
-| Permission tests (>=25): 27 tests | COMPLETE |
-| Focused Phase 4D2 suite: 74 passed | COMPLETE |
-| Expanded suite: 1664 passed | COMPLETE |
-| Complete non-live suite: 2374 passed | COMPLETE |
-| Zero failures | COMPLETE |
-| Zero skips | COMPLETE |
-| Zero collection errors | COMPLETE |
-| Git state clean | COMPLETE |
+| Issue | Description | Resolution |
+|---|---|---|
+| Issue 1 | Suite arithmetic: 1473+74=1664 (wrong, correct is 1547→now 1561 after adding 14 more tests) | Arithmetic verified via /tmp run; exact 34-file suite documented |
+| Issue 2 | TEST_DEPLOYMENT_FLAGS misclassified as controlled test deployment profile | Renamed to CONNECTIVITY_SMOKE_FLAGS; added CONTROLLED_TEST_DEPLOYMENT_FLAGS; added 3 ReadinessReport tier fields; added 14 profile-separation tests |
+| Issue 3 | CANNOT_VERIFY permissions classified as PRESENT_AND_SUFFICIENT | Classification corrected; CANNOT_VERIFY permissions now correctly block controlled_test_deployment_ready |
 
 ---
 
-## External Blockers
+## Previous Phase 4D2 SHA
 
-### BLOCKER 1 (Required before test deployment)
-
-**Source code path mismatch**
-
-- Current active deployment `01f181110277111f8f8d22379e477ecc` uses `transparence_app`.
-- Phase 4D2 changes (and all preceding state-persistence changes) are in `Transparence_2_0_git`
-  on branch `feature/genie-state-persistence`.
-- Owner: lokesh.choraria@te.com
-- Resolution: sync git repo content to `transparence_app` or redeploy from git repo.
-- WARNING: remember to delete `frontend/node_modules/` after npm build before deployment.
+`a51a90b12fc5ff3e74744fe109da0428f1984451`
 
 ---
 
-## Safe Test Deployment Confirmation
+## Readiness Assessment
 
-Controlled test deployment is safe when BLOCKER 1 is resolved, with these flag settings:
+### Readiness Service Output (Profile B environment, no permission snapshot)
 
-```
-USE_GENIE_BACKEND=true
-GENIE_FALLBACK_TO_CUSTOM_PIPELINE=true
-ENABLE_DURABLE_GENIE_SESSION_ADAPTER=false
-CONVERSATION_REPOSITORY_BACKEND=memory
-ENABLE_LAKEBASE_CONVERSATION_REPOSITORY=false
-ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY=false
-All debug flags: false
-CONVERSATION_STATE_CLEANUP_HARD_DELETE=false
-```
+| Field | Value |
+|---|---|
+| `connectivity_smoke_ready` | **True** (when Genie config is valid) |
+| `controlled_test_deployment_ready` | **False** |
+| `production_ready` | **False** |
+| `deployment_sync_required` | **True** |
+| `overall_ready` | **True** (domain checks pass) |
 
-Expected behaviour in test deployment:
-- Genie conversations route through `01f17a93e6aa1b97a9da7ef329e15e46`
-- Session state held in-memory (lost on cold start — acceptable for smoke test)
-- Reset endpoint returns 503 (trusted identity disabled — acceptable)
-- No durable Lakebase writes
-- CSV export uses returned_rows_only mode
+### Why controlled_test_deployment_ready=False
+
+Two mandatory permissions remain CANNOT_VERIFY_NON_DESTRUCTIVELY:
+1. **Genie Space CAN_RUN** — no non-destructive API for Genie Space permissions
+2. **SQL Warehouse CAN_USE** — no CAN_MANAGE access to enumerate grants
+
+Both permissions must be explicitly confirmed by DevOps/IT before controlled deployment.
 
 ---
 
-## Known Non-Blockers (documented for awareness)
+## All Gates
 
-| Item | Notes |
-|------|-------|
-| Lakebase endpoint IDLE | Scale-to-zero; wakes on first connection (~5-30s). Not a blocker for test deployment since durable adapter is disabled. |
-| HMAC secret quality unverified | Secret value not read during audit. Will surface as sanitized startup error if short/missing when trusted identity is enabled. |
-| Genie Space CAN_RUN unverifiable via non-destructive API | Confirmed by prior working deployment history. Will surface as 401/403 in test if missing. |
-| Session state loss on cold start | Known gap (diagnosed 2026-07-14); Delta persistence is a post-4D2 work item. |
-
----
-
-## Production Deployment Gate Sequence
-
-1. Resolve BLOCKER 1 (source path sync)
-2. Deploy test deployment with TEST_DEPLOYMENT_FLAGS
-3. Smoke test: send 3–5 chat messages via Genie
-4. Verify: responses return, no 5xx errors, no secret leakage in logs
-5. Enable ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY=true, redeploy, verify reset endpoint returns 200
-6. Enable ENABLE_DURABLE_GENIE_SESSION_ADAPTER=true + lakebase backend, redeploy
-7. Verify: conversation state survives app restart (cold-start resilience test)
-8. Final production promotion
+| Gate | Result |
+|---|---|
+| Issue 1: Suite arithmetic | PASS — 1473+88=1561 (34-file), 2300+88=2388 (non-live) |
+| Issue 2: Profile definitions | PASS — 3 distinct profiles with clear semantics |
+| Issue 3: Permission classification | PASS — CANNOT_VERIFY correctly blocks controlled deployment |
+| 61 configuration tests | PASS |
+| 27 permission tests | PASS |
+| 34-file suite | PASS — 1561/1561 |
+| Complete non-live suite | PASS — 2388/2388, 0 skipped |
+| No deployment performed | CONFIRMED |
+| No live Lakebase/Genie | CONFIRMED |
+| No production data modified | CONFIRMED |
+| uv not staged | CONFIRMED |
 
 ---
 
-## Confirmed: No Prohibited Actions Taken
+## Profile A — Connectivity Smoke
 
-- No deployment executed
-- No app restart triggered
-- No live Genie conversation started
-- No Lakebase records created, updated, or deleted
-- No production data queried
-- No assistant memory modified
-- No frontend files changed
-- No static artifact changes
-- No dependency changes
-- uv not staged
+**Safe to run when:**
+- App is deployed and running
+- Genie Space is shared with SP (CAN_RUN confirmed separately)
+- Warehouse has CAN_USE for SP
+
+**Validates only:** app startup, Genie request/response, basic rendering.
+
+**Does NOT authorise controlled test deployment.**
+
+---
+
+## Profile B — Controlled Test Deployment
+
+**Blocked by:**
+1. Genie Space CAN_RUN: CANNOT_VERIFY_NON_DESTRUCTIVELY → DevOps/IT to confirm
+2. SQL Warehouse CAN_USE: CANNOT_VERIFY_NON_DESTRUCTIVELY → DevOps/IT to confirm
+3. Source-sync: git repo must be synchronised to `transparence_app/` → deployment preparation
+
+**Not blocked by:**
+- Domain configuration (all checks pass)
+- Lakebase permissions (confirmed PRESENT_AND_SUFFICIENT via Phase 2B2B2)
+- Shipment table SELECT (confirmed PRESENT_AND_SUFFICIENT via UC API)
+- Secret binding (confirmed PRESENT_AND_SUFFICIENT via app resource config)
+
+---
+
+## DevOps/IT Actions Required Before Controlled Test Deployment
+
+1. **Genie Space CAN_RUN**: Confirm `app-31pcl9 transparence` (SP 78664835752275) has CAN_RUN on Genie Space `01f17a93e6aa1b97a9da7ef329e15e46` via the Genie Space Share dialog.
+
+2. **SQL Warehouse CAN_USE**: Confirm SP has CAN_USE on warehouse `8e46614f7064d8fd` via Workspace UI → SQL Warehouses → Permissions.
+
+3. **Source sync**: Synchronise `Transparence_2_0_git` git repository to `transparence_app/` source path before deployment.
+
+---
+
+## Files Changed (Correction)
+
+- `app/services/production_readiness.py` — 4 new ReadinessReport fields, `_check_controlled_deployment_flags`, `CONNECTIVITY_SMOKE_FLAGS`, `CONTROLLED_TEST_DEPLOYMENT_FLAGS`, updated `check_production_readiness`
+- `tests/test_production_readiness_configuration.py` — updated imports/tests, added GROUP 9 (14 new tests, total 61)
+- `docs/statefix/phase4d2/configuration_contract.md` — 3 profiles, corrected semantics
+- `docs/statefix/phase4d2/permissions_matrix.md` — corrected classifications, CANNOT_VERIFY properly noted
+- `docs/statefix/phase4d2/test_report.md` — corrected arithmetic (1561, 2388), corrected counts
+- `docs/statefix/phase4d2/phase4d2_exit_assessment.md` — this file
+
+`tests/test_production_readiness_permissions.py` — unchanged (correctly handles CANNOT_VERIFY already).
+
+---
+
+## Phase 4D2: PASS WITH EXTERNAL PERMISSION BLOCKERS
+
+Controlled test deployment is NOT safe while Genie Space CAN_RUN and SQL Warehouse CAN_USE remain CANNOT_VERIFY_NON_DESTRUCTIVELY. DevOps/IT must supply explicit evidence before proceeding.
+
+Connectivity smoke (Profile A) is safe to run independently once SP permissions are confirmed for Genie Space and warehouse.

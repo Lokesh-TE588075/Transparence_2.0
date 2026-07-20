@@ -104,6 +104,28 @@ class ReadinessReport:
     # Informational counts only — no secret values
     configuration_items_checked: int
     flags_checked: int
+    # -----------------------------------------------------------------------
+    # Deployment-tier readiness (three profiles)
+    #
+    # Profile A — Connectivity Smoke:
+    #   Validates app startup, Genie connectivity, basic response rendering.
+    #   Does NOT validate: trusted identity, owner isolation, durable
+    #   persistence, browser-refresh/backend-restart recovery, reset
+    #   tombstones, Lakebase integration, or fail-closed behaviour.
+    #   Must NOT authorise controlled test deployment.
+    #
+    # Profile B — Controlled Test Deployment:
+    #   Exercises the full target architecture. Requires: trusted identity,
+    #   durable adapter, Lakebase repository, no legacy fallback.
+    #   Blocked when mandatory permissions are unverifiable or missing.
+    #   Blocked while deployment_sync_required=True.
+    #
+    # Production — same criteria as Profile B at this stage.
+    # -----------------------------------------------------------------------
+    connectivity_smoke_ready: bool
+    controlled_test_deployment_ready: bool
+    production_ready: bool
+    deployment_sync_required: bool
 
 
 # ---------------------------------------------------------------------------
@@ -564,24 +586,96 @@ def _check_resource_bindings(environ: Mapping[str, str]) -> tuple[bool, List[str
 
 
 # ---------------------------------------------------------------------------
+# Controlled test-deployment flag validation (Profile B)
+# ---------------------------------------------------------------------------
+
+
+#: Flags required for Profile B (controlled test deployment).
+_CONTROLLED_DEPLOYMENT_REQUIRED: dict = {
+    "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY": "true",
+    "ENABLE_DURABLE_GENIE_SESSION_ADAPTER": "true",
+    "ENABLE_LAKEBASE_CONVERSATION_REPOSITORY": "true",
+    "CONVERSATION_REPOSITORY_BACKEND": "lakebase",
+    "GENIE_FALLBACK_TO_CUSTOM_PIPELINE": "false",
+    "NEW_PIPELINE_FALLBACK_TO_OLD": "false",
+}
+
+#: Human-readable description per flag for blockers.
+_CONTROLLED_FLAG_DESC: dict = {
+    "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY":
+        "Trusted owner identity is required for controlled deployment.",
+    "ENABLE_DURABLE_GENIE_SESSION_ADAPTER":
+        "Durable Genie session adapter is required for controlled deployment.",
+    "ENABLE_LAKEBASE_CONVERSATION_REPOSITORY":
+        "Lakebase conversation repository must be enabled for controlled deployment.",
+    "CONVERSATION_REPOSITORY_BACKEND":
+        "Conversation repository backend must be 'lakebase' (not memory).",
+    "GENIE_FALLBACK_TO_CUSTOM_PIPELINE":
+        "Genie fallback to custom pipeline must be disabled for controlled deployment.",
+    "NEW_PIPELINE_FALLBACK_TO_OLD":
+        "New pipeline fallback to old must be disabled for controlled deployment.",
+}
+
+
+def _check_controlled_deployment_flags(
+    environ: Mapping[str, str],
+) -> tuple[bool, List[str], List[str]]:
+    """Validate Profile B (controlled test deployment) mandatory flags.
+
+    Returns (ok, blocking_reasons, warnings).
+    Each blocking reason is prefixed 'CONTROLLED_DEPLOYMENT_BLOCKER:' so
+    callers can distinguish these from domain-check blockers.
+    These blockers do NOT affect overall_ready (domain-only gate).
+    Profile A (smoke) may use values that do not meet these requirements.
+    """
+    reasons: List[str] = []
+    warnings: List[str] = []
+
+    for flag, expected in _CONTROLLED_DEPLOYMENT_REQUIRED.items():
+        actual = environ.get(flag, "").strip().lower()
+        if actual != expected:
+            desc = _CONTROLLED_FLAG_DESC.get(flag, flag)
+            reasons.append(
+                f"CONTROLLED_DEPLOYMENT_BLOCKER: {desc} "
+                f"({flag}={actual!r}; required {expected!r}). "
+                "Profile A (smoke) may retain the current value."
+            )
+
+    ok = len(reasons) == 0
+    return ok, reasons, warnings
+
+
+# ---------------------------------------------------------------------------
 # Main readiness check
 # ---------------------------------------------------------------------------
 
 
 def check_production_readiness(
     environ: Optional[Mapping[str, str]] = None,
+    permission_snapshot: Optional[Dict[str, str]] = None,
 ) -> ReadinessReport:
     """Perform a complete, non-destructive production readiness check.
 
     Args:
         environ: Environment variable mapping. Defaults to os.environ when None.
                  Pass a dict for testing or CI validation.
+        permission_snapshot: Optional mapping of permission keys to status
+                 strings (e.g. {"genie_space_can_run": "PRESENT_AND_SUFFICIENT"}).
+                 When None, mandatory permissions are treated as unverifiable and
+                 controlled_test_deployment_ready will be False.
+                 When provided, evaluated via check_permission_snapshot().
 
     Returns:
         ReadinessReport with all fields populated. No network I/O is performed.
         No secret values appear in the returned object.
 
     The check never raises; all errors are captured in blocking_reasons.
+
+    Deployment tier semantics:
+        connectivity_smoke_ready          Profile A — validates Genie config only.
+        controlled_test_deployment_ready  Profile B — full architecture + verified perms.
+        production_ready                  Same criteria as Profile B at this stage.
+        deployment_sync_required          Always True (DEPLOYMENT PREPARATION BLOCKER).
     """
     env: Mapping[str, str] = os.environ if environ is None else environ
 
@@ -622,6 +716,76 @@ def check_production_readiness(
         genie_ok, lakebase_ok, bindings_ok,
     ])
 
+    # -------------------------------------------------------------------------
+    # Profile A: Connectivity smoke
+    # Requires working Genie config and valid flag syntax only.
+    # Does NOT require trusted identity, durable state, or Lakebase.
+    # -------------------------------------------------------------------------
+    connectivity_smoke_ready = config_ok and genie_ok and flags_ok
+
+    # -------------------------------------------------------------------------
+    # Profile B controlled deployment flag check.
+    # Blockers are tagged CONTROLLED_DEPLOYMENT_BLOCKER and added to
+    # blocking_reasons, but do NOT affect overall_ready.
+    # -------------------------------------------------------------------------
+    ctrl_ok, ctrl_reasons, ctrl_warnings = _check_controlled_deployment_flags(env)
+    all_blocking.extend(ctrl_reasons)
+    all_warnings.extend(ctrl_warnings)
+
+    # -------------------------------------------------------------------------
+    # Permission check for Profile B.
+    # A permission may be PRESENT_AND_SUFFICIENT only with explicit evidence.
+    # CANNOT_VERIFY is treated as a blocker for controlled deployment.
+    # -------------------------------------------------------------------------
+    perm_ok: bool
+    if permission_snapshot is not None:
+        perm_report = check_permission_snapshot(permission_snapshot)
+        perm_ok = perm_report.overall_ready
+        if not perm_ok:
+            _n_blocked = len(perm_report.blocking_entries)
+            _n_unverifiable = len(perm_report.unverifiable_entries)
+            all_blocking.append(
+                f"PERMISSION_BLOCKER: {_n_blocked} mandatory permission(s) are not "
+                "PRESENT_AND_SUFFICIENT. "
+                f"{_n_unverifiable} permission(s) remain CANNOT_VERIFY_NON_DESTRUCTIVELY "
+                "(including Genie Space CAN_RUN and SQL Warehouse CAN_USE). "
+                "DevOps/IT must supply explicit evidence before authorising "
+                "controlled test deployment."
+            )
+    else:
+        perm_ok = False
+        all_blocking.append(
+            "PERMISSION_BLOCKER: No permission snapshot provided. "
+            "Mandatory permissions (Genie Space CAN_RUN, SQL Warehouse CAN_USE) "
+            "cannot be verified non-destructively and remain CANNOT_VERIFY. "
+            "DevOps/IT must supply explicit evidence before authorising "
+            "controlled test deployment."
+        )
+
+    # -------------------------------------------------------------------------
+    # Profile B: Controlled test deployment.
+    # True only when domain checks pass, Profile B flags are correct, and
+    # all mandatory permissions are confirmed PRESENT_AND_SUFFICIENT.
+    # -------------------------------------------------------------------------
+    controlled_test_deployment_ready = overall and ctrl_ok and perm_ok
+
+    # Production shares the same criteria as Profile B at this stage.
+    production_ready = controlled_test_deployment_ready
+
+    # -------------------------------------------------------------------------
+    # Deployment sync blocker (DEPLOYMENT PREPARATION BLOCKER — not a permission).
+    # The active Databricks App deployment uses transparence_app/, not the git
+    # repository. This is always True; cannot be verified from env vars alone.
+    # -------------------------------------------------------------------------
+    deployment_sync_required = True
+    all_warnings.append(
+        "DEPLOYMENT_PREPARATION_BLOCKER: Git repository "
+        "(Transparence_2_0_git / feature/genie-state-persistence) "
+        "must be synchronised to the Databricks App source path "
+        "(transparence_app/) before test deployment. "
+        "This is a deployment preparation action, not a permission grant."
+    )
+
     return ReadinessReport(
         configuration_ready=config_ok,
         feature_flags_ready=flags_ok,
@@ -635,6 +799,10 @@ def check_production_readiness(
         warnings=all_warnings,
         configuration_items_checked=items_checked,
         flags_checked=flags_checked,
+        connectivity_smoke_ready=connectivity_smoke_ready,
+        controlled_test_deployment_ready=controlled_test_deployment_ready,
+        production_ready=production_ready,
+        deployment_sync_required=deployment_sync_required,
     )
 
 
@@ -768,9 +936,13 @@ def check_permission_snapshot(
 # Test-deployment safe flag combination
 # ---------------------------------------------------------------------------
 
-#: Safe feature-flag values for a controlled test deployment (Genie smoke test,
-#: durable state disabled, trusted identity disabled).
-TEST_DEPLOYMENT_FLAGS: Dict[str, str] = {
+#: Profile A flag values (connectivity smoke only).
+#: Validates app startup, Genie connectivity, and basic response rendering.
+#: Does NOT validate: trusted identity, owner isolation, durable persistence,
+#: browser-refresh/backend-restart recovery, reset tombstones, Lakebase
+#: integration, or production fail-closed behaviour.
+#: Must NOT be used to authorise controlled test deployment.
+CONNECTIVITY_SMOKE_FLAGS: Dict[str, str] = {
     "USE_GENIE_BACKEND": "true",
     "GENIE_FALLBACK_TO_CUSTOM_PIPELINE": "true",
     "ENABLE_DURABLE_GENIE_SESSION_ADAPTER": "false",
@@ -784,6 +956,26 @@ TEST_DEPLOYMENT_FLAGS: Dict[str, str] = {
     "TRANSPARENCE_DIAGNOSTIC_LOG_SQL": "false",
     "USE_NEW_ACCURACY_PIPELINE": "true",
     "NEW_PIPELINE_FALLBACK_TO_OLD": "true",
+    "GENIE_EXPORT_MODE": "returned_rows_only",
+}
+
+#: Profile B flag values (controlled test deployment).
+#: Exercises the full target architecture. All mandatory features enabled.
+#: No legacy fallback. Permissions must be independently verified.
+CONTROLLED_TEST_DEPLOYMENT_FLAGS: Dict[str, str] = {
+    "USE_GENIE_BACKEND": "true",
+    "GENIE_FALLBACK_TO_CUSTOM_PIPELINE": "false",
+    "ENABLE_DURABLE_GENIE_SESSION_ADAPTER": "true",
+    "CONVERSATION_REPOSITORY_BACKEND": "lakebase",
+    "ENABLE_LAKEBASE_CONVERSATION_REPOSITORY": "true",
+    "ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY": "true",
+    "GENIE_DEBUG": "false",
+    "NEW_PIPELINE_DEBUG": "false",
+    "CONVERSATION_STATE_CLEANUP_HARD_DELETE": "false",
+    "TRANSPARENCE_DIAGNOSTIC_TRACING_ENABLED": "false",
+    "TRANSPARENCE_DIAGNOSTIC_LOG_SQL": "false",
+    "USE_NEW_ACCURACY_PIPELINE": "true",
+    "NEW_PIPELINE_FALLBACK_TO_OLD": "false",
     "GENIE_EXPORT_MODE": "returned_rows_only",
 }
 
@@ -815,6 +1007,7 @@ __all__ = [
     "PermissionReadinessReport",
     "check_production_readiness",
     "check_permission_snapshot",
-    "TEST_DEPLOYMENT_FLAGS",
+    "CONNECTIVITY_SMOKE_FLAGS",
+    "CONTROLLED_TEST_DEPLOYMENT_FLAGS",
     "PRODUCTION_FLAGS",
 ]

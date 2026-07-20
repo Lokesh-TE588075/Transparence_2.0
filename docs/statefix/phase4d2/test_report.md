@@ -1,132 +1,136 @@
-# Phase 4D2 — Test Report
+# Phase 4D2 — Test Report (Correction)
 
-Phase 4D2 — Validate production configuration and permissions readiness
-
-Generated: 2026-07-20
+## Status: CORRECTED
 
 ---
 
-## New Test Files
+## Issue 1 Correction — Suite Arithmetic
 
-| File | Tests | Description |
-|------|-------|-------------|
-| tests/test_production_readiness_configuration.py | 47 | Configuration inventory, feature-flag invariants, secret validation, debug warnings, Lakebase config, report structure |
-| tests/test_production_readiness_permissions.py | 27 | Permission snapshot validation, blocking classification, optional permissions, CANNOT_VERIFY handling, report structure |
-| **Phase 4D2 Total** | **74** | |
+### Previous report error
 
----
+The previous Phase 4D2 report stated:
+- Phase 4D1 exact baseline: 1473
+- New Phase 4D2 tests: 47 + 27 = 74
+- Reported expanded result: **1664** ← INCORRECT
 
-## Focused Phase 4D2 Tests
+1473 + 74 = 1547, not 1664. The previous run used more than 34 files.
 
-Files: `tests/test_production_readiness_configuration.py`, `tests/test_production_readiness_permissions.py`
+### Corrected counts
 
-```
-74 passed, 0 failed, 0 skipped
-Duration: 0.70s
-```
+**Collection audit (per-file):**
 
-### Test Groups (configuration file, 47 tests)
+| File | Tests Collected |
+|---|---|
+| `test_production_readiness_configuration.py` | 61 |
+| `test_production_readiness_permissions.py` | 27 |
+| **Total new Phase 4D2** | **88** |
 
-- Group 1: Boolean parser determinism (tests 1–6)
-- Group 2: Required configuration variables (tests 7–12)
-- Group 3: Feature-flag dependency invariants (tests 13–22)
-- Group 4: Safe flag combinations (tests 23–28)
-- Group 5: Secret validation (tests 29–33)
-- Group 6: Debug-mode warnings (tests 34–38)
-- Group 7: Lakebase configuration (tests 39–43)
-- Group 8: ReadinessReport structure (tests 44–47)
+Note: 14 new tests (48–61) were added to address Issue 2 (deployment profile separation).
 
-### Test Groups (permissions file, 27 tests)
+**Exact 34-file suite:**
 
-- Group 1: All-sufficient snapshot (tests 1–4)
-- Group 2: Missing blocking permissions (tests 5–10)
-- Group 3: Insufficient permissions (tests 11–13)
-- Group 4: Optional permissions (tests 14–16)
-- Group 5: CANNOT_VERIFY (tests 17–20)
-- Group 6: Report structure and safety (tests 21–27)
+| Component | Tests |
+|---|---|
+| Phase 4D1 32-file baseline | 1473 |
+| Phase 4D2 configuration tests | +61 |
+| Phase 4D2 permission tests | +27 |
+| **34-file total** | **1561** |
 
----
+**Result: 1561 passed, 0 failed, 0 skipped, 0 collection errors**
 
-## Expanded Suite (32-file Phase 4D1 baseline + 2 Phase 4D2 files)
+**Complete non-live suite:**
 
-Files: 34 total (32 Phase 4D1 + 2 Phase 4D2)
+| Component | Tests |
+|---|---|
+| Phase 4D1 complete non-live baseline | 2300 |
+| Phase 4D2 new tests | +88 |
+| **Total** | **2388** |
 
-```
-1664 passed, 0 failed, 0 skipped
-Duration: 11.98s
-1 deprecation warning (pydantic V2 class-based config — pre-existing)
-```
-
-Baseline delta: 1473 (Phase 4D1) + 191 (expanded set including Phase 4D2's 74) = 1664
+**Result: 2388 passed, 0 failed, 0 skipped, 0 collection errors**
 
 ---
 
-## Complete Non-Live Python Suite
+## Exact 34-File Suite — File List
 
-Excluded (live smoke tests):
-- tests/test_genie_live_smoke.py
-- tests/test_genie_integration_smoke.py
-- tests/test_delta_state_live_smoke.py
-- tests/test_new_pipeline_live_smoke.py
-
-Files run: 55 test files
-
-```
-2374 passed, 0 failed, 0 skipped
-Duration: 13.25s
-1 deprecation warning (pydantic V2 — pre-existing)
-```
-
-Baseline delta: 2300 (Phase 4D1) + 74 (Phase 4D2) = 2374
-
----
-
-## Key Invariants Proven by Tests
-
-| Invariant | Test(s) | Result |
-|-----------|---------|--------|
-| Durable state without trusted identity is blocked | test_13 | PASS |
-| Lakebase backend requires explicit enable flag | test_14 | PASS |
-| Hard delete true is explicitly blocked | test_15 | PASS |
-| Hard delete defaults to false | test_16 | PASS |
-| Genie backend requires Space ID | test_17 | PASS |
-| Unknown flag value is blocked | test_18 | PASS |
-| Test deployment flags produce overall_ready=True | test_25 | PASS |
-| Production flags include no debug | test_26 | PASS |
-| Secret value never appears in report | test_30, test_46 | PASS |
-| Missing HMAC secret blocked when trusted identity enabled | test_29 | PASS |
-| Genie debug true produces warning | test_34 | PASS |
-| CANNOT_VERIFY blocking permission blocks overall | test_17 perm | PASS |
-| Optional permission missing does not block | test_15 perm | PASS |
-| Empty snapshot is blocked | test_20 perm | PASS |
-| Report is immutable (frozen dataclass) | test_44, test_26 perm | PASS |
+1. `tests/test_lakebase_conversation_repository.py`
+2. `tests/test_lakebase_connection_provider.py`
+3. `tests/test_durable_genie_session_adapter.py`
+4. `tests/test_durable_genie_session_runtime_factory.py`
+5. `tests/test_genie_backend_durable_runtime_wiring.py`
+6. `tests/test_main_durable_runtime_lifecycle.py`
+7. `tests/test_conversation_repository.py`
+8. `tests/test_conversation_repository_factory.py`
+9. `tests/test_conversation_state_cleanup.py`
+10. `tests/test_conversation_state_factory.py`
+11. `tests/test_delta_conversation_state.py`
+12. `tests/test_genie_session_store.py`
+13. `tests/test_genie_session_store_context.py`
+14. `tests/test_multi_user_session_isolation.py`
+15. `tests/test_request_owner_identity.py`
+16. `tests/test_owner_identity_secret_configuration.py`
+17. `tests/test_request_owner_identity_runtime.py`
+18. `tests/test_chat_trusted_identity_extraction.py`
+19. `tests/test_genie_pipeline_owner_key_plumbing.py`
+20. `tests/test_chat_owner_key_plumbing.py`
+21. `tests/test_genie_pipeline_durable_lookup.py`
+22. `tests/test_chat_durable_lookup_key_plumbing.py`
+23. `tests/test_genie_pipeline_durable_writeback.py`
+24. `tests/test_genie_pipeline_last_message_persistence.py`
+25. `tests/test_conversation_reset_coordinator.py`
+26. `tests/test_genie_pipeline_inactive_durable_state.py`
+27. `tests/test_process_local_conversation_key.py`
+28. `tests/test_chat_owner_scoped_local_key.py`
+29. `tests/test_conversation_reset_route.py`
+30. `tests/test_conversation_reset_runtime_wiring.py`
+31. `tests/test_conversation_reset_combined_lifecycle.py`
+32. `tests/test_browser_restart_idle_lifecycle.py`
+33. `tests/test_production_readiness_configuration.py`
+34. `tests/test_production_readiness_permissions.py`
 
 ---
 
-## Production Readiness Service
+## Configuration Test Groups (61 tests)
 
-File: `app/services/production_readiness.py`
+| Group | Tests | Description |
+|---|---|---|
+| TestBooleanParserDeterminism | 6 | Boolean parsing determinism |
+| TestRequiredConfiguration | 6 | Required env var presence |
+| TestFeatureFlagInvariants | 10 | Flag dependency invariants |
+| TestSafeFlagCombinations | 6 | Profile A and production flag combinations |
+| TestSecretValidation | 5 | Secret presence only — no value reads |
+| TestDebugModeWarnings | 5 | Debug mode warning generation |
+| TestLakebaseConfiguration | 5 | Lakebase config validation |
+| TestReadinessReportStructure | 4 | Report immutability and structure |
+| TestDeploymentProfileSeparation | 14 | NEW: Profile A vs Profile B separation |
+| **Total** | **61** | |
 
-Public surface:
-- `check_production_readiness(environ=None) -> ReadinessReport`
-- `check_permission_snapshot(snapshot: dict) -> PermissionReadinessReport`
-- `TEST_DEPLOYMENT_FLAGS: Dict[str, str]`
-- `PRODUCTION_FLAGS: Dict[str, str]`
+## Permission Test Groups (27 tests)
 
-Security properties:
-- No network I/O
-- No secret values in output
-- No raw exception messages
-- No os.environ access at import time
-- All blocking reasons are sanitized plain-English
+| Group | Tests | Description |
+|---|---|---|
+| TestAllSufficientSnapshot | 4 | Full sufficient snapshot |
+| TestMissingBlockingPermissions | 6 | Missing required permissions |
+| TestInsufficientPermissions | 3 | PRESENT_BUT_INSUFFICIENT |
+| TestOptionalPermissions | 3 | NOT_REQUIRED non-blocking |
+| TestCannotVerifyPermissions | 4 | CANNOT_VERIFY blocks |
+| TestPermissionReportStructure | 7 | Structure and safety |
+| **Total** | **27** | |
 
 ---
 
-## Frontend Tests
+## Excluded Smoke Files (4)
 
-Not rerun — no frontend or static artifact changes in Phase 4D2.
+- `tests/test_genie_live_smoke.py`
+- `tests/test_genie_integration_smoke.py`
+- `tests/test_delta_state_live_smoke.py`
+- `tests/test_new_pipeline_live_smoke.py`
 
-Last known frontend results (Phase 4D1):
-- Frontend persistence: 43 passed
-- Frontend reset: 49 passed
-- Combined frontend: 92 passed
+---
+
+## Test Environment
+
+- Transient deps installed: `pydantic-settings`, `rapidfuzz`, `pytest-asyncio`
+- No application deps modified
+- No deployment performed
+- No live Lakebase/Genie calls
+- Run location: `/tmp/transparence_4d2_audit/` (workspace pycache restriction bypass)

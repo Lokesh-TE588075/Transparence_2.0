@@ -1,110 +1,56 @@
-# Phase 4D2 — Service Principal Permission Matrix
+# Phase 4D2 — Permission Evidence Matrix
 
-Phase 4D2 — Validate production configuration and permissions readiness
+## Status: CORRECTED
 
-Generated: 2026-07-20
+## Classification Rules
 
-Application service principal: `app-31pcl9 transparence`
-Client ID: `488a0acb-5804-42f0-98b1-a02cc13c4573`
-Numeric ID: `78664835752275`
+- **PRESENT_AND_SUFFICIENT**: Supported by explicit evidence from non-destructive API inspection.
+- **PRESENT_BUT_INSUFFICIENT**: Permission exists but grants fewer rights than required.
+- **MISSING**: Confirmed absent.
+- **CANNOT_VERIFY_NON_DESTRUCTIVELY**: No safe API to confirm; DevOps/IT must validate before controlled deployment.
+- **NOT_REQUIRED**: Not needed in the current architecture.
 
----
-
-## Section 1: Required Before Test Deployment
-
-| Resource | Resource ID | Principal | Required Permission | Current Permission | Status | Owner/Team | Reason | Validation Method |
-|----------|------------|-----------|--------------------|--------------------|--------|-----------|--------|-------------------|
-| Genie Space | 01f17a93e6aa1b97a9da7ef329e15e46 | SP 78664835752275 | CAN_RUN | CAN_RUN (confirmed via memory, previously shared) | PRESENT AND SUFFICIENT | Space owner (lokesh.choraria@te.com) | SP must start and continue Genie conversations | Share Genie Space with SP from Space share dialog |
-| SQL Warehouse | 8e46614f7064d8fd | SP 78664835752275 | CAN_USE | CAN_USE (confirmed — old pipeline worked) | PRESENT AND SUFFICIENT | Warehouse admin | SP executes SQL via Genie Space | Run test query via SP credentials |
-| Shipment Table (SELECT) | onedata_fn_ion_dev.ion_l0_raw.lbn_with_scorecard | SP 488a0acb-5804-42f0-98b1-a02cc13c4573 | SELECT | SELECT + MODIFY (confirmed via UC permissions API) | PRESENT AND SUFFICIENT | Unity Catalog admin | Genie reads shipment data | UC effective-permissions API confirmed |
-| Lakebase Project (connect) | projects/transparence-sessions/branches/production | SP 78664835752275 | CAN_CONNECT_AND_CREATE | CAN_CONNECT_AND_CREATE (confirmed in app resource binding) | PRESENT AND SUFFICIENT | lokesh.choraria@te.com (project owner) | App connects to Lakebase via postgres binding | apps get transparence — resources section |
-| Databricks Secret (READ) | transparence-owner-identity / conversation-owner-hmac-v1 | SP 78664835752275 | READ | READ (confirmed in app resource binding) | PRESENT AND SUFFICIENT | Secret owner | App reads HMAC secret for owner identity | apps get transparence — resources section |
+A permission may be classified PRESENT_AND_SUFFICIENT ONLY when supported by explicit evidence.
+CANNOT_VERIFY is treated as a blocker for `controlled_test_deployment_ready`.
 
 ---
 
-## Section 2: Required Before Production Deployment (Durable State Active)
+## Permission Matrix
 
-| Resource | Resource ID | Principal | Required Permission | Current Permission | Status | Owner/Team | Reason | Validation Method |
-|----------|------------|-----------|--------------------|--------------------|--------|-----------|--------|-------------------|
-| Lakebase app_conversation table (DML) | transparence_state.app_conversation | SP PG role | SELECT, INSERT, UPDATE, DELETE | GRANT-based access confirmed (Phase 2B2B2) | PRESENT AND SUFFICIENT | lokesh.choraria@te.com (schema owner) | Durable session state read/write | Confirmed in Phase 2B2B2 via psql GRANT statements |
-| Lakebase schema (USAGE) | transparence_state | SP PG role | USAGE | USAGE granted (Phase 2B2B2) | PRESENT AND SUFFICIENT | lokesh.choraria@te.com | Schema access for SP role | Confirmed in Phase 2B2B2 |
-| HMAC secret minimum quality | transparence-owner-identity / conversation-owner-hmac-v1 | N/A | >= 32 bytes UTF-8 | CANNOT VERIFY (never read in this phase) | CANNOT VERIFY NON-DESTRUCTIVELY | Secret creator | Trusted identity requires strong HMAC secret | Enable ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY=true in test and observe startup |
-
----
-
-## Section 3: Optional Operational Permissions
-
-| Resource | Resource ID | Principal | Required Permission | Current Permission | Status | Owner/Team | Reason |
-|----------|------------|-----------|--------------------|--------------------|--------|-----------|--------|
-| Genie Space (end-user direct access) | 01f17a93e6aa1b97a9da7ef329e15e46 | End users | CAN_VIEW (optional) | NOT REQUIRED in SP-backend mode | NOT REQUIRED | N/A | SP executes all Genie calls; end users never access Space directly |
-| Feedback/Audit Delta tables | onedata_fn_ion_dev.ion_l0_raw.* | SP | SELECT, MODIFY | Inherited from schema GRANT | PRESENT AND SUFFICIENT | UC admin | Optional feedback and audit logging |
+| Resource | Principal | Required Level | Evidence Source | Status | Blocking Owner | Validation Needed |
+|---|---|---|---|---|---|---|
+| Genie Space `01f17a93e6aa1b97a9da7ef329e15e46` | SP `app-31pcl9 transparence` (78664835752275) | CAN_RUN | None available — no non-destructive API for Genie Space permissions | **CANNOT_VERIFY_NON_DESTRUCTIVELY** | DevOps/IT | Grant CAN_RUN via Genie Space Share dialog; confirm via live smoke test |
+| SQL Warehouse `8e46614f7064d8fd` | SP `app-31pcl9 transparence` (78664835752275) | CAN_USE | No CAN_MANAGE — permissionLevels API only; cannot inspect grants | **CANNOT_VERIFY_NON_DESTRUCTIVELY** | DevOps/IT | Confirm via Workspace UI → SQL Warehouses → Permissions |
+| `onedata_fn_ion_dev.ion_l0_raw.lbn_with_scorecard` | SP `app-31pcl9 transparence` (78664835752275) | SELECT | Unity Catalog effective-permissions API confirmed SELECT + MODIFY | **PRESENT_AND_SUFFICIENT** | — | None |
+| Lakebase project `projects/transparence-sessions/branches/production` | SP via app binding | CAN_CONNECT_AND_CREATE | App resource config shows `postgres` binding with CAN_CONNECT_AND_CREATE level | **PRESENT_AND_SUFFICIENT** | — | Confirm app is running with binding active |
+| Lakebase `transparence_state.app_conversation` | SP PG role | SELECT, INSERT, UPDATE | GRANT statement executed in Phase 2B2B2; confirmed with `\dp` in psql session | **PRESENT_AND_SUFFICIENT** | — | None — grants are permanent |
+| Lakebase `transparence_state.app_conversation` | SP PG role | DELETE | Not required by app_conversation lifecycle (soft-delete only; hard-delete flag=false) | **NOT_REQUIRED** | — | None |
+| Secret `transparence-owner-identity/conversation-owner-hmac-v1` | SP via app binding | READ | App resource config shows `conversation-owner-hmac-secret` binding with READ scope | **PRESENT_AND_SUFFICIENT** | — | Confirm app binding is active |
+| Genie Space `01f17a93e6aa1b97a9da7ef329e15e46` | Authenticated end users | CAN_VIEW | Not needed — SP executes all Genie calls on behalf of users | **NOT_REQUIRED** | — | None |
 
 ---
 
-## Section 4: Explicitly Not Required
+## Outstanding Unverifiable Permissions
 
-| Resource | Status | Reason |
-|----------|--------|--------|
-| Workspace admin | NOT REQUIRED | SP uses least-privilege application credentials |
-| Cluster CREATE | NOT REQUIRED | App uses SQL warehouse only |
-| Genie Space (end-user access) | NOT REQUIRED | SP-backend mode; users see only the chat UI |
-| X-Forwarded-Access-Token Genie calls | NOT REQUIRED | effective_user_api_scopes is IAM-only; SP credentials used for all Genie calls |
+| Resource | Principal | Why Unverifiable | DevOps/IT Action Required |
+|---|---|---|---|
+| Genie Space CAN_RUN | SP `app-31pcl9 transparence` | No non-destructive API endpoint exists for Genie Space permission inspection | Grant via Genie Space → Share dialog: "Can Run" for `app-31pcl9 transparence`. Confirm via live Genie smoke test (Profile A). |
+| SQL Warehouse CAN_USE | SP `app-31pcl9 transparence` | Only permissionLevels endpoint accessible; not CAN_MANAGE — cannot enumerate grants | Verify via Workspace UI → SQL Warehouses → `8e46614f7064d8fd` → Permissions. Confirm SP has CAN_USE. |
 
----
-
-## Section 5: Unverifiable Permissions (no live API support)
-
-| Resource | Reason Unverifiable | Validation Path |
-|----------|--------------------|-----------------|
-| Genie Space CAN_RUN for SP | No /api/2.0/permissions endpoint for Genie spaces; confirmed by memory (Phase G-series share) | Enable USE_GENIE_BACKEND=true and run a test chat; 401/403 response would indicate missing permission |
-| SQL Warehouse CAN_USE for SP | Warehouse permissions endpoint requires CAN_MANAGE (not held by current user) | Same — Genie smoke test would fail with warehouse access error if missing |
-| HMAC secret minimum quality | Secret value never read during audit | Enable trusted identity in test deployment; any startup error indicates secret quality issue |
+**These two permissions must be explicitly confirmed before `controlled_test_deployment_ready` can be True.**
 
 ---
 
-## Section 6: DevOps / IT Actions Required
+## Impact on Readiness Gates
 
-### Required Before Test Deployment
+| Gate | Result | Reason |
+|---|---|---|
+| `connectivity_smoke_ready` | **True** (when config is valid) | Genie config present; domain checks pass |
+| `controlled_test_deployment_ready` | **False** | Genie Space CAN_RUN and SQL Warehouse CAN_USE are CANNOT_VERIFY_NON_DESTRUCTIVELY |
+| `production_ready` | **False** | Same blockers as controlled_test_deployment_ready |
+| `deployment_sync_required` | **True** | Active deployment is from `transparence_app/`, not git repo |
 
-1. **Source path sync** (Owner: lokesh.choraria@te.com)
-   - The active deployment uses `transparence_app`. The git repo changes must be synced or redeployed from `Transparence_2_0_git`.
-   - Action: either (a) copy/sync files from git repo to `transparence_app`, or (b) create new deployment pointing to git repo.
-   - Do NOT delete `frontend/node_modules/` before confirming npm build is complete.
-
-2. **Genie Space share with SP** (Owner: Space owner = lokesh.choraria@te.com)
-   - Already completed in earlier phases per memory note.
-   - Verify: Genie Space share dialog shows `app-31pcl9 transparence` with CAN_RUN.
-
-3. **SQL Warehouse access for SP** (Owner: Warehouse admin / IT)
-   - Action: Verify SP has CAN_USE on warehouse `8e46614f7064d8fd`.
-   - GRANT already confirmed working in earlier phases.
-
-### Required Before Production Deployment
-
-4. **Enable ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY=true in app.yaml** (Owner: lokesh.choraria@te.com)
-   - Update app.yaml value from `false` to `true` after test smoke test passes.
-   - Confirm HMAC secret resolves correctly (startup will fail with sanitized error if secret is absent).
-
-5. **Enable ENABLE_DURABLE_GENIE_SESSION_ADAPTER=true + lakebase backend** (Owner: lokesh.choraria@te.com)
-   - Update app.yaml after full test deployment passes.
-   - Lakebase schema and table already exist (Phase 2B2B2).
-   - SP role GRANT already applied (Phase 2B2B2).
-
-6. **Verify Lakebase endpoint is ACTIVE before full production** (Owner: lokesh.choraria@te.com)
-   - Lakebase endpoint `ep-withered-king-d257e0k1` is currently IDLE (scale-to-zero).
-   - First connection will wake it (\~5-30s cold start). Acceptable for initial production.
-   - Alert: if endpoint is DISABLED or SUSPENDED, re-enable before deployment.
-
----
-
-## Section 7: End-User Permission Requirements
-
-End users do not require any Databricks workspace permissions beyond the ability to access
-the Databricks App URL. The app SP handles all Genie, warehouse, and Lakebase calls.
-
-The `X-Forwarded-User` header (injected by Databricks Apps) provides trusted identity;
-end users cannot forge this header.
-
-The `effective_user_api_scopes` is `["iam.access-control:read", "iam.current-user:read"]`
-which is IAM-read-only. This is correct and intentional — the SP credentials are used
-for all data and Genie operations.
+`controlled_test_deployment_ready` will remain False until:
+1. DevOps/IT confirms Genie Space CAN_RUN and SQL Warehouse CAN_USE
+2. A permission snapshot with all mandatory permissions PRESENT_AND_SUFFICIENT is provided to `check_production_readiness()`
+3. The DEPLOYMENT_PREPARATION_BLOCKER is resolved (git sync)

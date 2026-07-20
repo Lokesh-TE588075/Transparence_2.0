@@ -22,7 +22,8 @@ from app.services.production_readiness import (
     check_production_readiness,
     ReadinessReport,
     PRODUCTION_FLAGS,
-    TEST_DEPLOYMENT_FLAGS,
+    CONNECTIVITY_SMOKE_FLAGS,
+    CONTROLLED_TEST_DEPLOYMENT_FLAGS,
     _parse_bool_flag,
 )
 
@@ -228,11 +229,11 @@ class TestFeatureFlagInvariants:
 class TestSafeFlagCombinations:
     """Valid test-deployment and production flag combinations must pass cleanly."""
 
-    def test_23_test_deployment_flags_pass(self):
-        """TEST_DEPLOYMENT_FLAGS combined with required config must be ready."""
-        env = _base_env(**TEST_DEPLOYMENT_FLAGS)
+    def test_23_smoke_flags_pass_flag_checks(self):
+        """CONNECTIVITY_SMOKE_FLAGS combined with required config must pass flag checks."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
         report = check_production_readiness(env)
-        # No blocking reasons from flags or invariants
+        # No blocking reasons from domain flag invariants
         flag_reasons = [r for r in report.blocking_reasons if "INVARIANT" in r]
         assert not flag_reasons, f"Unexpected invariant violations: {flag_reasons}"
         assert report.feature_flags_ready
@@ -255,12 +256,20 @@ class TestSafeFlagCombinations:
         assert report.genie_configuration_ready
         assert report.lakebase_configuration_ready
 
-    def test_25_test_deployment_is_fully_ready(self):
-        """Test deployment config must produce overall_ready=True."""
-        env = _base_env(**TEST_DEPLOYMENT_FLAGS)
+    def test_25_smoke_profile_is_connectivity_smoke_ready(self):
+        """Smoke profile must produce connectivity_smoke_ready=True.
+
+        Note: connectivity_smoke_ready=True does NOT authorise controlled
+        test deployment. Use controlled_test_deployment_ready for that gate.
+        """
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
         report = check_production_readiness(env)
+        assert report.connectivity_smoke_ready, (
+            f"Expected connectivity_smoke_ready=True. Blocking: {report.blocking_reasons}"
+        )
+        # Domain checks pass even for smoke profile
         assert report.overall_ready, (
-            f"Expected overall_ready=True. Blocking: {report.blocking_reasons}"
+            f"Expected overall_ready=True for smoke. Blocking: {report.blocking_reasons}"
         )
 
     def test_26_production_flags_include_no_debug(self):
@@ -493,6 +502,11 @@ class TestReadinessReportStructure:
         assert hasattr(report, "overall_ready")
         assert hasattr(report, "blocking_reasons")
         assert hasattr(report, "warnings")
+        # Deployment-tier readiness fields (Phase 4D2 correction)
+        assert hasattr(report, "connectivity_smoke_ready")
+        assert hasattr(report, "controlled_test_deployment_ready")
+        assert hasattr(report, "production_ready")
+        assert hasattr(report, "deployment_sync_required")
 
     def test_46_no_secrets_in_report_fields(self):
         """Report fields must not contain any value that looks like a secret."""
@@ -511,3 +525,188 @@ class TestReadinessReportStructure:
         assert report.configuration_items_checked > 0
         assert isinstance(report.flags_checked, int)
         assert report.flags_checked > 0
+
+# ===========================================================================
+# GROUP 9: Deployment profile separation (Tests 48–58)
+# ===========================================================================
+
+
+_FULL_SUFFICIENT_SNAPSHOT: dict = {
+    "genie_space_can_run": "PRESENT_AND_SUFFICIENT",
+    "sql_warehouse_can_use": "PRESENT_AND_SUFFICIENT",
+    "shipment_table_select": "PRESENT_AND_SUFFICIENT",
+    "lakebase_can_connect": "PRESENT_AND_SUFFICIENT",
+    "lakebase_app_conversation_dml": "PRESENT_AND_SUFFICIENT",
+    "secret_scope_hmac_read": "PRESENT_AND_SUFFICIENT",
+    "genie_space_end_user_access": "NOT_REQUIRED",
+}
+
+
+def _controlled_base_env() -> dict:
+    """Full environment satisfying Profile B (controlled test deployment)."""
+    env = _base_env(**CONTROLLED_TEST_DEPLOYMENT_FLAGS)
+    env["CONVERSATION_OWNER_HMAC_SECRET"] = _VALID_HMAC_PLACEHOLDER
+    env["LAKEBASE_ENDPOINT_NAME"] = _VALID_ENDPOINT
+    env["PGHOST"] = "ep-withered-king-d257e0k1.database.us-east-1.cloud.databricks.com"
+    env["PGDATABASE"] = "databricks_postgres"
+    env["PGPORT"] = "5432"
+    env["PGUSER"] = "sp_role"
+    env["PGSSLMODE"] = "require"
+    return env
+
+
+class TestDeploymentProfileSeparation:
+    """Profile A (smoke) must be distinct from Profile B (controlled deployment)."""
+
+    def test_48_smoke_flags_produce_connectivity_smoke_ready(self):
+        """Smoke flags must set connectivity_smoke_ready=True."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
+        report = check_production_readiness(env)
+        assert report.connectivity_smoke_ready, (
+            f"Expected connectivity_smoke_ready=True. Blocking: {report.blocking_reasons}"
+        )
+
+    def test_49_smoke_flags_do_not_produce_controlled_deployment_ready(self):
+        """Smoke profile must NOT authorise controlled test deployment."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
+        report = check_production_readiness(env)
+        assert not report.controlled_test_deployment_ready, (
+            "Smoke profile must not produce controlled_test_deployment_ready=True. "
+            "That would misclassify an incomplete architecture as deployment-safe."
+        )
+
+    def test_50_smoke_profile_has_mandatory_limitations(self):
+        """Smoke profile must have trusted identity, durable state, and Lakebase disabled."""
+        assert CONNECTIVITY_SMOKE_FLAGS["ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"] == "false"
+        assert CONNECTIVITY_SMOKE_FLAGS["ENABLE_DURABLE_GENIE_SESSION_ADAPTER"] == "false"
+        assert CONNECTIVITY_SMOKE_FLAGS["CONVERSATION_REPOSITORY_BACKEND"] == "memory"
+        assert CONNECTIVITY_SMOKE_FLAGS["ENABLE_LAKEBASE_CONVERSATION_REPOSITORY"] == "false"
+
+    def test_51_controlled_profile_requires_no_fallback(self):
+        """Controlled deployment must disable all legacy fallback paths."""
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["GENIE_FALLBACK_TO_CUSTOM_PIPELINE"] == "false"
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["NEW_PIPELINE_FALLBACK_TO_OLD"] == "false"
+
+    def test_52_smoke_flags_produce_controlled_deployment_blockers(self):
+        """Using smoke flags must produce CONTROLLED_DEPLOYMENT_BLOCKER reasons."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
+        report = check_production_readiness(env)
+        ctrl_blockers = [
+            r for r in report.blocking_reasons
+            if "CONTROLLED_DEPLOYMENT_BLOCKER" in r
+        ]
+        assert len(ctrl_blockers) > 0, (
+            "Smoke flags must produce at least one CONTROLLED_DEPLOYMENT_BLOCKER reason."
+        )
+
+    def test_53_memory_repository_rejected_for_controlled_deployment(self):
+        """Memory repository must produce a CONTROLLED_DEPLOYMENT_BLOCKER."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)  # has memory backend
+        report = check_production_readiness(env)
+        assert not report.controlled_test_deployment_ready
+        backend_blockers = [
+            r for r in report.blocking_reasons
+            if "CONTROLLED_DEPLOYMENT_BLOCKER" in r and "lakebase" in r.lower()
+        ]
+        assert len(backend_blockers) > 0, (
+            "Memory repository must be explicitly blocked for controlled deployment."
+        )
+
+    def test_54_disabled_trusted_identity_rejected_for_controlled_deployment(self):
+        """Disabled trusted identity must produce a CONTROLLED_DEPLOYMENT_BLOCKER."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)  # has trusted=false
+        report = check_production_readiness(env)
+        assert not report.controlled_test_deployment_ready
+        trusted_blockers = [
+            r for r in report.blocking_reasons
+            if "CONTROLLED_DEPLOYMENT_BLOCKER" in r and "trusted" in r.lower()
+        ]
+        assert len(trusted_blockers) > 0, (
+            "Disabled trusted identity must be explicitly blocked for controlled deployment."
+        )
+
+    def test_55_disabled_durable_state_rejected_for_controlled_deployment(self):
+        """Disabled durable state must produce a CONTROLLED_DEPLOYMENT_BLOCKER."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)  # has durable=false
+        report = check_production_readiness(env)
+        assert not report.controlled_test_deployment_ready
+        durable_blockers = [
+            r for r in report.blocking_reasons
+            if "CONTROLLED_DEPLOYMENT_BLOCKER" in r and "durable" in r.lower()
+        ]
+        assert len(durable_blockers) > 0, (
+            "Disabled durable state must be explicitly blocked for controlled deployment."
+        )
+
+    def test_56_legacy_fallback_rejected_for_controlled_deployment(self):
+        """Genie fallback=true must produce a CONTROLLED_DEPLOYMENT_BLOCKER."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)  # has GENIE_FALLBACK=true
+        report = check_production_readiness(env)
+        assert not report.controlled_test_deployment_ready
+        fallback_blockers = [
+            r for r in report.blocking_reasons
+            if "CONTROLLED_DEPLOYMENT_BLOCKER" in r and "fallback" in r.lower()
+        ]
+        assert len(fallback_blockers) > 0, (
+            "Genie fallback=true must be explicitly blocked for controlled deployment."
+        )
+
+    def test_57_controlled_flags_with_sufficient_permissions_pass(self):
+        """Controlled flags + full sufficient permission snapshot must authorise deployment."""
+        env = _controlled_base_env()
+        report = check_production_readiness(env, permission_snapshot=_FULL_SUFFICIENT_SNAPSHOT)
+        assert report.controlled_test_deployment_ready, (
+            f"Expected controlled_test_deployment_ready=True. "
+            f"Blocking: {report.blocking_reasons}"
+        )
+        assert report.production_ready, (
+            "production_ready must equal controlled_test_deployment_ready at this stage."
+        )
+
+    def test_58_no_permission_snapshot_blocks_controlled_deployment(self):
+        """Without a permission snapshot, controlled_test_deployment_ready must be False."""
+        env = _controlled_base_env()
+        report = check_production_readiness(env)  # No snapshot
+        assert not report.controlled_test_deployment_ready, (
+            "Missing permission snapshot must block controlled_test_deployment_ready."
+        )
+        assert any(
+            "PERMISSION_BLOCKER" in r for r in report.blocking_reasons
+        ), "PERMISSION_BLOCKER must appear in blocking_reasons when no snapshot is provided."
+
+    def test_59_cannot_verify_permissions_block_controlled_deployment(self):
+        """CANNOT_VERIFY permissions must block controlled_test_deployment_ready."""
+        env = _controlled_base_env()
+        unverifiable_snapshot = {
+            "genie_space_can_run": "CANNOT_VERIFY",
+            "sql_warehouse_can_use": "CANNOT_VERIFY",
+            "shipment_table_select": "PRESENT_AND_SUFFICIENT",
+            "lakebase_can_connect": "PRESENT_AND_SUFFICIENT",
+            "lakebase_app_conversation_dml": "PRESENT_AND_SUFFICIENT",
+            "secret_scope_hmac_read": "PRESENT_AND_SUFFICIENT",
+            "genie_space_end_user_access": "NOT_REQUIRED",
+        }
+        report = check_production_readiness(env, permission_snapshot=unverifiable_snapshot)
+        assert not report.controlled_test_deployment_ready, (
+            "CANNOT_VERIFY mandatory permissions must block controlled_test_deployment_ready."
+        )
+
+    def test_60_deployment_sync_required_is_always_true(self):
+        """deployment_sync_required must always be True (DEPLOYMENT PREPARATION BLOCKER)."""
+        env = _base_env(**CONNECTIVITY_SMOKE_FLAGS)
+        report = check_production_readiness(env)
+        assert report.deployment_sync_required is True, (
+            "deployment_sync_required must always be True; "
+            "git repo must be synced to app source before deployment."
+        )
+        # Must be flagged in warnings (not blocking_reasons — it is a prep action)
+        assert any(
+            "DEPLOYMENT_PREPARATION_BLOCKER" in w for w in report.warnings
+        ), "DEPLOYMENT_PREPARATION_BLOCKER must appear in warnings."
+
+    def test_61_production_flags_dict_matches_controlled_architecture(self):
+        """CONTROLLED_TEST_DEPLOYMENT_FLAGS must have all mandatory architecture flags."""
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["ENABLE_TRUSTED_REQUEST_OWNER_IDENTITY"] == "true"
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["ENABLE_DURABLE_GENIE_SESSION_ADAPTER"] == "true"
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["ENABLE_LAKEBASE_CONVERSATION_REPOSITORY"] == "true"
+        assert CONTROLLED_TEST_DEPLOYMENT_FLAGS["CONVERSATION_REPOSITORY_BACKEND"] == "lakebase"
