@@ -53,6 +53,14 @@ from app.services.process_local_conversation_key import (
     ProcessLocalConversationKeyError,
 )
 
+# --- H1: Owner-scoped conversation history persistence ---
+from app.services.message_history_service import (
+    build_response_payload as _build_history_payload,
+    MessageHistoryPersistenceError,
+)
+from app.services.message_repository import MESSAGE_TEXT_MAX_LEN
+from app.services.message_repository_runtime import get_message_repository
+
 # --- Phase 7B: New accuracy pipeline (feature-flag controlled) ---
 from app.config import settings as _app_settings
 
@@ -251,6 +259,31 @@ async def chat(request: Request, body: ChatRequest):
         content=user_message,
     )
 
+    # H1: Set up owner-scoped history repository (feature-flag gated).
+    # Lazy; returns None when ENABLE_MESSAGE_HISTORY=false or Lakebase unconfigured.
+    _history_repo = None
+    _history_owner_hash = (
+        _trusted_identity.owner_user_id_hash if _trusted_identity is not None else None
+    )
+    if _history_owner_hash is not None and _app_settings.ENABLE_MESSAGE_HISTORY:
+        _history_repo = get_message_repository()
+
+    # H1: Persist user message for browser-refresh rehydration.
+    if _history_repo is not None and _history_owner_hash is not None:
+        try:
+            _history_repo.append_message(
+                owner_user_id_hash=_history_owner_hash,
+                frontend_conversation_id=frontend_conversation_id,
+                role="user",
+                message_text=user_message[:MESSAGE_TEXT_MAX_LEN],
+            )
+        except Exception as _history_exc:
+            logger.warning(
+                "chat: user message history persistence failed for conv=%s: %s",
+                server_conversation_key,
+                str(_history_exc)[:200],
+            )
+
     try:
         # =================================================================
         # FEATURE FLAG: Genie Backend (Phase G4/G5)
@@ -316,6 +349,28 @@ async def chat(request: Request, body: ChatRequest):
                         content=genie_result.get("message", ""),
                         intent="genie",
                     )
+                    # H1: Persist assistant response for browser-refresh rehydration.
+                    # Only persisted when Genie answered (not fallback) and status is success.
+                    if (
+                        _history_repo is not None
+                        and _history_owner_hash is not None
+                        and genie_result.get("status") == "success"
+                    ):
+                        try:
+                            _asst_payload = _build_history_payload(genie_result)
+                            _history_repo.append_message(
+                                owner_user_id_hash=_history_owner_hash,
+                                frontend_conversation_id=frontend_conversation_id,
+                                role="assistant",
+                                message_text=genie_result.get("message", "")[:MESSAGE_TEXT_MAX_LEN],
+                                response_payload_json=_asst_payload,
+                            )
+                        except Exception as _history_exc:
+                            logger.warning(
+                                "chat: assistant response history persistence failed for conv=%s: %s",
+                                server_conversation_key,
+                                str(_history_exc)[:200],
+                            )
                     return ChatResponse(
                         status=genie_result.get("status", "success"),
                         message=genie_result.get("message", ""),

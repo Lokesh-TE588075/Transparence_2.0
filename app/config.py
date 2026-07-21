@@ -243,6 +243,20 @@ class Settings(BaseSettings):
         "TRANSPARENCE_DEPLOYMENT_ID", ""
     )
 
+    # -------------------------------------------------------------------------
+    # H1: Owner-Scoped Conversation History Persistence
+    # -------------------------------------------------------------------------
+    # Master switch for message history persistence and rehydration.
+    # Default: false — zero storage/latency impact until explicitly enabled.
+    # Requires Lakebase PGHOST and related env vars to be configured.
+    ENABLE_MESSAGE_HISTORY: bool = os.getenv(
+        "ENABLE_MESSAGE_HISTORY", "false"
+    ).lower() in ("true", "1", "yes")
+
+    # Maximum number of messages returned per history page.
+    # Capped at message_repository.MAX_PAGE_SIZE (100); lower value reduces payload.
+    HISTORY_MAX_PAGE_SIZE: int = int(os.getenv("HISTORY_MAX_PAGE_SIZE", "50"))
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

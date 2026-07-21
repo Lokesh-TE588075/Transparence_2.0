@@ -12,7 +12,7 @@ const SUGGESTIONS = [
   { icon: "✈️", text: "Compare air vs ocean transport volumes" },
 ];
 
-export default function ChatWindow({ conversation, isLoading, onSend, onFeedback }) {
+export default function ChatWindow({ conversation, isLoading, isHistoryLoading, onSend, onFeedback }) {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
@@ -53,7 +53,32 @@ export default function ChatWindow({ conversation, isLoading, onSend, onFeedback
   return (
     <div className="chat-window">
       <div className="messages-area">
-        {isEmpty ? (
+        {/* H1: Show skeleton while history is loading from backend */}
+        {isHistoryLoading ? (
+          <div className="history-loading-skeleton" role="status" aria-live="polite">
+            <div className="skeleton-message skeleton-message--bot">
+              <div className="skeleton-avatar" />
+              <div className="skeleton-lines">
+                <div className="skeleton-line skeleton-line--long" />
+                <div className="skeleton-line skeleton-line--medium" />
+              </div>
+            </div>
+            <div className="skeleton-message skeleton-message--user">
+              <div className="skeleton-lines">
+                <div className="skeleton-line skeleton-line--short" />
+              </div>
+              <div className="skeleton-avatar" />
+            </div>
+            <div className="skeleton-message skeleton-message--bot">
+              <div className="skeleton-avatar" />
+              <div className="skeleton-lines">
+                <div className="skeleton-line skeleton-line--long" />
+                <div className="skeleton-line skeleton-line--medium" />
+                <div className="skeleton-line skeleton-line--short" />
+              </div>
+            </div>
+          </div>
+        ) : isEmpty ? (
           <div className="welcome-screen">
             <div className="welcome-icon">
               <svg width="48" height="48" viewBox="0 0 48 48" fill="none">

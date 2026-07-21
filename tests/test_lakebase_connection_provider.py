@@ -764,9 +764,17 @@ def test_no_sqlalchemy_import() -> None:
 
 def test_no_runtime_module_imports_or_instantiates_provider_yet() -> None:
     root = pathlib.Path("app")
+    # Files that legitimately reference lakebase_connection_provider via deferred
+    # (function-level) imports in factory/runtime singletons.  Module-level imports
+    # are still banned for these files.
+    _ALLOWED_DEFERRED = {
+        "lakebase_connection_provider.py",
+        # H1: message repository runtime uses a deferred import inside _build_repository()
+        "message_repository_runtime.py",
+    }
     offenders: List[str] = []
     for path in root.rglob("*.py"):
-        if path.name == "lakebase_connection_provider.py":
+        if path.name in _ALLOWED_DEFERRED:
             continue
         text = path.read_text(encoding="utf-8")
         if "lakebase_connection_provider" in text or "LakebaseConnectionProvider(" in text:

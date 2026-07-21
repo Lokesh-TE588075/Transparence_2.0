@@ -21,6 +21,7 @@ import {
   saveLifecycleState,
   isValidConversationId,
 } from "./utils/conversationLifecyclePersistence";
+import { loadConversationHistory } from "./utils/conversationHistoryLoader";
 
 // Generate a unique conversation ID.
 function _newConvId() {
@@ -110,9 +111,13 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  // H1: Track which conversation is currently loading history (null = none).
+  const [historyLoadingConvId, setHistoryLoadingConvId] = useState(null);
 
   // Step 3: Immediately mutable ref for race-safe async callbacks.
   const activeConvIdRef = useRef(_initialLifecycle.activeConversationId);
+  // H1: AbortController ref for cancelling in-flight history requests.
+  const historyAbortRef = useRef(null);
 
   // Step 4: Synchronous reset lock — prevents same-tick double invocation.
   const resetInFlightRef = useRef(false);
@@ -136,11 +141,67 @@ export default function App() {
     setActiveConvId(nextId);
   }, []);
 
+  // H1: Load persisted message history for a conversation.
+  // Cancels any in-flight request for a different conversation first.
+  // Writes history only when the conversation is still active on completion.
+  const loadHistoryForConversation = useCallback(async (convId) => {
+    if (!convId || !isValidConversationId(convId)) return;
+    // Check whether messages are already loaded (non-empty) to avoid overwrite
+    // This is checked again after fetch to prevent TOCTOU but early-exit is cheap
+    const conv = conversations.find(c => c.id === convId);
+    if (conv && conv.messages.length > 0) return;
+
+    // Cancel previous in-flight history request
+    if (historyAbortRef.current) {
+      historyAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
+    if (isMountedSafe(isMountedRef)) setHistoryLoadingConvId(convId);
+
+    try {
+      const result = await loadConversationHistory(convId, controller.signal);
+      if (!isMountedSafe(isMountedRef)) return;
+      // Race guard: discard if user switched away while loading
+      if (activeConvIdRef.current !== convId) return;
+      if (!Array.isArray(result.messages) || result.messages.length === 0) return;
+
+      setConversations(prev => prev.map(c => {
+        if (c.id !== convId) return c;
+        // Guard: don't overwrite live messages written during load
+        if (c.messages.length > 0) return c;
+        return { ...c, messages: result.messages };
+      }));
+    } catch (err) {
+      // Network failures on history load are non-fatal — user still has a working chat
+      if (err && err.name !== 'AbortError') {
+        console.warn('[H1] History load failed:', err.message);
+      }
+    } finally {
+      if (isMountedSafe(isMountedRef) && historyLoadingConvId === convId) {
+        setHistoryLoadingConvId(null);
+      }
+    }
+  }, [conversations, historyLoadingConvId]);
+
+  // H1: Load history on mount for the active conversation.
+  useEffect(() => {
+    const convId = activeConvIdRef.current;
+    if (convId) {
+      loadHistoryForConversation(convId);
+    }
+    // Run once on mount only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Step 5: Guard sidebar selection — inactive conversations are read-only.
   const handleSelectConversation = useCallback((id) => {
     if (isConversationInactive(inactiveConvIdsRef.current, id)) return;
     activateConversation(id);
-  }, [activateConversation]);
+    // H1: Load history when switching to a conversation with no messages
+    loadHistoryForConversation(id);
+  }, [activateConversation, loadHistoryForConversation]);
 
   const activeConv = conversations.find(c => c.id === activeConvId) || conversations[0];
 
@@ -342,6 +403,7 @@ export default function App() {
           <ChatWindow
             conversation={activeConv}
             isLoading={isLoading || isResetting}
+            isHistoryLoading={historyLoadingConvId === activeConvId}
             onSend={handleSendMessage}
             onFeedback={handleFeedback}
           />

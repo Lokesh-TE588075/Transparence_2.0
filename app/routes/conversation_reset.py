@@ -42,6 +42,8 @@ from app.services.conversation_reset_runtime import (
     get_conversation_reset_coordinator,
     ConversationResetRuntimeUnavailableError,
 )
+from app.services.message_history_service import deactivate_conversation_messages
+from app.services.message_repository_runtime import get_message_repository
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -262,7 +264,21 @@ async def reset_conversation(
         )
 
     # ------------------------------------------------------------------
-    # Step 7: Return static success response.
+    # Step 7: H1 — Deactivate message history for this conversation.
+    # Non-blocking: failure must not affect the reset success response.
+    # The message repo returns None when ENABLE_MESSAGE_HISTORY=false,
+    # in which case this is a no-op.
+    # ------------------------------------------------------------------
+    _msg_repo = get_message_repository()
+    if _msg_repo is not None:
+        deactivate_conversation_messages(
+            repo=_msg_repo,
+            owner_user_id_hash=trusted_owner_hash,
+            frontend_conversation_id=canonical_frontend_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Step 8: Return static success response.
     # Never exposes which internal outcome occurred.
     # ------------------------------------------------------------------
     return JSONResponse(

@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routes import chat, feedback, export, health, conversation_reset
+from app.routes import chat, feedback, export, health, conversation_reset, conversation_history
 from app.services.genie_backend_factory import reset_genie_pipeline
 from app.utils.logging import setup_logging
 
@@ -123,6 +123,7 @@ app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(feedback.router, prefix="/api", tags=["feedback"])
 app.include_router(export.router, prefix="/api", tags=["export"])
 app.include_router(conversation_reset.router, prefix="/api", tags=["conversations"])
+app.include_router(conversation_history.router, prefix="/api", tags=["conversations"])
 
 
 # --- Static Files (React frontend build) ---

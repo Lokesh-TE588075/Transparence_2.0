@@ -612,3 +612,60 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ==========================================================================
+   H1: Conversation history skeleton loader
+   Shown while persisted message history loads from the backend on refresh.
+   ========================================================================== */
+
+.history-loading-skeleton {
+  padding: 32px 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.skeleton-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.skeleton-message--user {
+  flex-direction: row-reverse;
+}
+
+.skeleton-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, var(--gray-200) 25%, var(--gray-100) 50%, var(--gray-200) 75%);
+  background-size: 400% 100%;
+  animation: skeletonShimmer 1.4s ease infinite;
+  flex-shrink: 0;
+}
+
+.skeleton-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  max-width: 520px;
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: 7px;
+  background: linear-gradient(90deg, var(--gray-200) 25%, var(--gray-100) 50%, var(--gray-200) 75%);
+  background-size: 400% 100%;
+  animation: skeletonShimmer 1.4s ease infinite;
+}
+
+.skeleton-line--long   { width: 88%; }
+.skeleton-line--medium { width: 62%; }
+.skeleton-line--short  { width: 38%; }
+
+@keyframes skeletonShimmer {
+  0%   { background-position: 100% 50%; }
+  100% { background-position:   0% 50%; }
+}
